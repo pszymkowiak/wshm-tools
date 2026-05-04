@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, tick } from 'svelte';
 	import { fetchLogs, type LogEntry } from '$lib/api';
 	import { Heading, Button, Select, Toggle } from 'flowbite-svelte';
 
@@ -13,7 +13,7 @@
 	let paused: boolean = $state(false);
 	let autoscroll: boolean = $state(true);
 	let error: string | null = $state(null);
-	let pollTimer: ReturnType<typeof setInterval> | null = null;
+	let loading: boolean = $state(false);
 	let logContainer: HTMLDivElement | undefined = $state();
 
 	const LEVELS = [
@@ -24,46 +24,55 @@
 		{ value: 'ERROR', name: 'Error' }
 	];
 
-	async function loadInitial() {
-		try {
-			const r = await fetchLogs({ tail: TAIL_INITIAL, level });
-			entries = r.entries;
-			lastId = r.last_id;
-			error = null;
-			scheduleScroll();
-		} catch (e) {
-			error = e instanceof Error ? e.message : 'load failed';
-		}
-	}
+	// In-flight guard: refuses to fire a new fetch while one is pending.
+	// Without this, a slow poll + a fast next-tick can race and append
+	// entries out of order.
+	let inFlight = false;
+	// Each fetch carries the level it was started with; if `level` changes
+	// while a fetch is in flight, we discard that response on arrival.
+	let pollTimer: ReturnType<typeof setInterval> | null = null;
 
-	async function pollIncremental() {
-		if (paused) return;
+	async function fetchOnce(opts: { tail?: number; reset: boolean }) {
+		if (inFlight) return;
+		const requestedLevel = level;
+		const reset = opts.reset;
+		inFlight = true;
+		if (reset) loading = true;
 		try {
 			const r = await fetchLogs({
-				since: lastId ?? undefined,
-				level
+				tail: opts.tail,
+				level: requestedLevel,
+				since: reset ? undefined : (lastId ?? undefined)
 			});
-			if (r.entries.length > 0) {
-				entries = [...entries, ...r.entries];
-				if (entries.length > MAX_VISIBLE) {
-					entries = entries.slice(-MAX_VISIBLE);
-				}
+			// If level changed mid-flight, ignore the response — a fresh
+			// reset fetch is already on its way.
+			if (level !== requestedLevel) return;
+			if (reset) {
+				entries = r.entries;
 				lastId = r.last_id;
-				scheduleScroll();
+			} else if (r.entries.length > 0) {
+				const next = entries.length + r.entries.length > MAX_VISIBLE
+					? [...entries, ...r.entries].slice(-MAX_VISIBLE)
+					: [...entries, ...r.entries];
+				entries = next;
+				lastId = r.last_id;
 			}
-			error = null;
+			if (error) error = null;
+			if (r.entries.length > 0 || reset) await scheduleScroll();
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'poll failed';
+			error = e instanceof Error ? e.message : 'load failed';
+		} finally {
+			inFlight = false;
+			if (reset) loading = false;
 		}
 	}
 
-	function scheduleScroll() {
+	async function scheduleScroll() {
 		if (!autoscroll) return;
-		queueMicrotask(() => {
-			if (logContainer) {
-				logContainer.scrollTop = logContainer.scrollHeight;
-			}
-		});
+		await tick();
+		if (logContainer) {
+			logContainer.scrollTop = logContainer.scrollHeight;
+		}
 	}
 
 	function clearLogs() {
@@ -96,20 +105,35 @@
 		navigator.clipboard.writeText(text).catch(() => {});
 	}
 
+	function shouldPoll(): boolean {
+		if (paused) return false;
+		// Don't poll when the tab is hidden — the user isn't watching, and
+		// it lets the daemon's broadcast channel cool down.
+		if (typeof document !== 'undefined' && document.hidden) return false;
+		return true;
+	}
+
+	// Reload from scratch whenever the level changes (or on first mount).
+	let prevLevel: string | null = null;
 	$effect(() => {
-		// Reload from scratch when level changes.
-		level;
-		lastId = null;
+		if (prevLevel === level) return;
+		prevLevel = level;
 		entries = [];
-		loadInitial();
+		lastId = null;
+		fetchOnce({ tail: TAIL_INITIAL, reset: true });
 	});
 
 	onMount(() => {
-		pollTimer = setInterval(pollIncremental, POLL_MS);
+		pollTimer = setInterval(() => {
+			if (shouldPoll()) fetchOnce({ reset: false });
+		}, POLL_MS);
 	});
 
 	onDestroy(() => {
-		if (pollTimer) clearInterval(pollTimer);
+		if (pollTimer) {
+			clearInterval(pollTimer);
+			pollTimer = null;
+		}
 	});
 </script>
 
@@ -119,7 +143,7 @@
 
 <div class="mb-4">
 	<Heading tag="h2" class="text-xl mb-1">Daemon logs</Heading>
-	<p class="text-sm text-gray-500">Tail of the in-memory log buffer (resets on daemon restart). Polls every {POLL_MS / 1000}s.</p>
+	<p class="text-sm text-gray-500">Tail of the in-memory log buffer (resets on daemon restart). Polls every {POLL_MS / 1000}s when this tab is visible.</p>
 </div>
 
 <div class="flex flex-wrap items-center gap-3 mb-3">
@@ -132,7 +156,9 @@
 	<Toggle bind:checked={autoscroll}>Autoscroll</Toggle>
 
 	<div class="ml-auto flex gap-2">
-		<Button color="alternative" size="xs" onclick={loadInitial}>Reload</Button>
+		<Button color="alternative" size="xs" disabled={loading} onclick={() => fetchOnce({ tail: TAIL_INITIAL, reset: true })}>
+			{loading ? 'Loading…' : 'Reload'}
+		</Button>
 		<Button color="alternative" size="xs" onclick={copyAll}>Copy all</Button>
 		<Button color="alternative" size="xs" onclick={clearLogs}>Clear view</Button>
 	</div>
@@ -150,7 +176,7 @@
 	style="height: calc(100vh - 200px); min-height: 280px; max-height: 75vh;"
 >
 	{#if entries.length === 0}
-		<div class="text-gray-500">No log entries yet.</div>
+		<div class="text-gray-500">{loading ? 'Loading…' : 'No log entries yet.'}</div>
 	{:else}
 		{#each entries as entry (entry.id)}
 			<div class="flex gap-2 hover:bg-gray-900/50 px-1">
