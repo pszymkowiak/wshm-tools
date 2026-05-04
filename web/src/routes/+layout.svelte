@@ -3,7 +3,7 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import { selectedRepo, theme, type Theme } from '$lib/stores';
-	import { fetchStatus, fetchMe, fetchAuthStatus, type RepoInfo, type Me, type AuthStatus } from '$lib/api';
+	import { fetchStatus, fetchMe, fetchAuthStatus, syncIncremental, syncFull, type RepoInfo, type Me, type AuthStatus } from '$lib/api';
 	import '../app.css';
 
 	let { children }: { children: Snippet } = $props();
@@ -103,6 +103,24 @@
 		bannerDismissed = true;
 		try { localStorage.setItem('wshm-anon-banner-dismissed', 'true'); } catch { /* ignore */ }
 	}
+
+	let syncing = $state(false);
+	let syncMsg: string | null = $state(null);
+
+	async function runSync(full: boolean) {
+		if (syncing) return;
+		syncing = true;
+		syncMsg = full ? 'Full sync...' : 'Sync...';
+		try {
+			const r = full ? await syncFull() : await syncIncremental();
+			const ok = r.errors?.length === 0;
+			syncMsg = ok ? `Synced ${r.synced.length} repo(s)` : `Partial: ${r.errors?.length} error(s)`;
+		} catch (e) {
+			syncMsg = e instanceof Error ? e.message : 'Sync failed';
+		}
+		syncing = false;
+		setTimeout(() => { if (syncMsg) syncMsg = null; }, 4000);
+	}
 </script>
 
 {#if isLoginRoute}
@@ -121,7 +139,7 @@
 		</div>
 
 		{#if !collapsed}
-			<div class="px-3 py-2 border-b border-gray-700">
+			<div class="px-3 py-2 border-b border-gray-700 space-y-1.5">
 				<select
 					onchange={handleRepoChange}
 					class="w-full rounded border border-gray-600 bg-gray-900 px-1.5 py-1 text-xs text-gray-300 focus:border-blue-500 focus:outline-none"
@@ -131,6 +149,25 @@
 						<option value={r.slug}>{r.slug}</option>
 					{/each}
 				</select>
+				<div class="flex gap-1">
+					<button
+						type="button"
+						onclick={() => runSync(false)}
+						disabled={syncing}
+						title="Incremental sync (changes since last sync)"
+						class="flex-1 rounded border border-gray-600 bg-gray-900 px-1.5 py-1 text-xs text-gray-300 hover:border-blue-500 hover:text-blue-300 disabled:opacity-40 disabled:cursor-default"
+					>{syncing ? '…' : 'Sync'}</button>
+					<button
+						type="button"
+						onclick={() => runSync(true)}
+						disabled={syncing}
+						title="Full re-sync (slower)"
+						class="flex-1 rounded border border-gray-600 bg-gray-900 px-1.5 py-1 text-xs text-gray-300 hover:border-blue-500 hover:text-blue-300 disabled:opacity-40 disabled:cursor-default"
+					>Full</button>
+				</div>
+				{#if syncMsg}
+					<div class="text-[0.65rem] text-gray-500 truncate" title={syncMsg}>{syncMsg}</div>
+				{/if}
 			</div>
 		{/if}
 
