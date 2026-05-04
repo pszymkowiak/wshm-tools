@@ -427,6 +427,25 @@ fn is_claude_cli_available() -> bool {
 
 /// Resolve the best Anthropic auth: OAuth token (Max/Pro) > API key
 pub fn resolve_anthropic_auth() -> Option<(String, bool)> {
+    // Priority 0: encrypted secret store (admin-managed via UI). Checks
+    // global scope only — Anthropic credentials are not per-repo.
+    if let Some(store) = crate::secrets::global() {
+        if let Ok(Some(v)) =
+            store.get_blocking(crate::secrets::Scope::Global, None, "anthropic_oauth_token")
+        {
+            if !v.is_empty() {
+                return Some((v, true));
+            }
+        }
+        if let Ok(Some(v)) =
+            store.get_blocking(crate::secrets::Scope::Global, None, "anthropic_api_key")
+        {
+            if !v.is_empty() {
+                return Some((v, false));
+            }
+        }
+    }
+
     // Priority 1: OAuth token from .wshm/credentials
     let creds = load_credentials();
     if let Some(token) = creds.get("ANTHROPIC_OAUTH_TOKEN") {

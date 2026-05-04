@@ -1,6 +1,7 @@
 pub mod ai;
 pub mod auth;
 pub mod cli;
+pub mod secrets;
 pub mod config;
 pub mod daemon;
 pub mod db;

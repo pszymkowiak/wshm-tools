@@ -302,6 +302,10 @@ pub struct DaemonExtensions {
     /// `GET /api/v1/logs`. Pass the same instance that's wired into the
     /// `tracing_subscriber` registry.
     pub logs: Option<Arc<log_buffer::LogBuffer>>,
+    /// Encrypted secret store (AES-256-GCM, SQLite-backed). When `Some`,
+    /// the `/api/v1/secrets/*` endpoints are served and the daemon will
+    /// look up GitHub/Anthropic tokens here before falling back to env vars.
+    pub secrets: Option<Arc<dyn crate::secrets::SecretStore>>,
     /// Extra API routes merged under the same auth layer as OSS routes.
     pub extra_api: Option<axum::Router<Arc<crate::daemon::web::WebState>>>,
     /// Replacement SPA router (e.g. a Pro web-dist with extra routes).
@@ -326,6 +330,13 @@ pub async fn run_multi_with_extensions(
     // caller didn't explicitly thread one through extensions.
     if extensions.logs.is_none() {
         extensions.logs = log_buffer::global();
+    }
+
+    // Install the secret store globally so non-async helpers like
+    // Config::github_token can resolve from the encrypted store before
+    // falling back to env vars.
+    if let Some(store) = extensions.secrets.as_ref() {
+        crate::secrets::install_global(Arc::clone(store));
     }
     // Install rustls crypto provider early (needed even before TLS handshake)
     rustls::crypto::ring::default_provider()

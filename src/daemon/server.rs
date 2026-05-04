@@ -53,7 +53,7 @@ pub async fn run(
     repos.insert(slug, daemon);
     let multi = Arc::new(super::MultiDaemonState::new(repos));
     // OSS: no Pro extensions
-    let web = super::web::web_routes_with_extensions(multi, None, None, None, None);
+    let web = super::web::web_routes_with_extensions(multi, None, None, None, None, None);
 
     let app = webhook_routes.merge(web);
 
@@ -211,6 +211,7 @@ pub async fn run_multi(
         multi,
         extensions.users,
         extensions.logs,
+        extensions.secrets,
         extensions.extra_api,
         extensions.spa_override,
     );

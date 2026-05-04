@@ -22,9 +22,14 @@
 		fetchAuthStatus,
 		setGithubToken,
 		setAnthropicToken,
+		fetchSecrets,
+		putSecret,
+		revealSecret,
+		deleteSecret,
 		type LicenseInfo,
 		type ReposListResponse,
 		type AuthStatus,
+		type SecretRecord,
 	} from '$lib/api';
 
 	let colors: ColorConfig = $state({ ...colorConfig.defaults });
@@ -57,6 +62,73 @@
 	let savingAnthropic: boolean = $state(false);
 	let anthropicMessage: string | null = $state(null);
 	let anthropicError: boolean = $state(false);
+
+	// Encrypted secrets
+	let secrets: SecretRecord[] = $state([]);
+	let secretsError: string | null = $state(null);
+	let newSecretScope: 'global' | 'repo' = $state('global');
+	let newSecretSlug: string = $state('');
+	let newSecretKey: string = $state('');
+	let newSecretValue: string = $state('');
+	let savingSecret: boolean = $state(false);
+	let secretMessage: string | null = $state(null);
+	let secretMessageErr: boolean = $state(false);
+	let revealedId: number | null = $state(null);
+	let revealedValue: string | null = $state(null);
+
+	async function refreshSecrets() {
+		try {
+			const r = await fetchSecrets();
+			secrets = r.secrets;
+			secretsError = null;
+		} catch (e) {
+			secretsError = e instanceof Error ? e.message : 'load failed';
+		}
+	}
+
+	async function handleAddSecret() {
+		if (!newSecretKey.trim() || !newSecretValue) return;
+		savingSecret = true; secretMessage = null; secretMessageErr = false;
+		try {
+			await putSecret({
+				scope: newSecretScope,
+				slug: newSecretScope === 'repo' ? newSecretSlug.trim() : undefined,
+				key: newSecretKey.trim(),
+				value: newSecretValue
+			});
+			secretMessage = 'Secret saved (encrypted).';
+			newSecretKey = ''; newSecretValue = ''; newSecretSlug = '';
+			await refreshSecrets();
+		} catch (e) {
+			secretMessage = e instanceof Error ? e.message : 'save failed';
+			secretMessageErr = true;
+		}
+		savingSecret = false;
+	}
+
+	async function handleReveal(id: number) {
+		try {
+			const r = await revealSecret(id);
+			revealedId = id;
+			revealedValue = r.value;
+			// Auto-hide after 30s
+			setTimeout(() => {
+				if (revealedId === id) { revealedId = null; revealedValue = null; }
+			}, 30000);
+		} catch (e) {
+			secretsError = e instanceof Error ? e.message : 'reveal failed';
+		}
+	}
+
+	async function handleDeleteSecret(id: number) {
+		try {
+			await deleteSecret(id);
+			if (revealedId === id) { revealedId = null; revealedValue = null; }
+			await refreshSecrets();
+		} catch (e) {
+			secretsError = e instanceof Error ? e.message : 'delete failed';
+		}
+	}
 
 	function saveColors() { colorConfig.save(colors); }
 	function resetColors() { colorConfig.reset(); colors = { ...colorConfig.defaults }; }
@@ -133,6 +205,7 @@
 		try { license = await fetchLicense(); } catch { /* ignore */ }
 		await refreshRepos();
 		await refreshAuth();
+		await refreshSecrets();
 	});
 </script>
 
@@ -454,5 +527,114 @@
 				{/each}
 			</div>
 		</Card>
+	</TabItem>
+
+	<!-- ========================= SECRETS ============================ -->
+	<TabItem title="Secrets">
+		<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+			<!-- Stored secrets list -->
+			<Card class="bg-gray-800 border-gray-700 max-w-none">
+				<Heading tag="h3" class="text-base mb-4">Stored secrets</Heading>
+				<Helper class="mb-3">
+					Encrypted at rest with AES-256-GCM. Plaintext is never written to disk.
+				</Helper>
+				{#if secretsError}
+					<Alert color="red" class="text-xs py-2 mb-2">{secretsError}</Alert>
+				{/if}
+				{#if secrets.length === 0}
+					<p class="text-sm text-gray-500">No secrets stored. Use the form on the right to add one.</p>
+				{:else}
+					<table class="w-full text-xs">
+						<thead class="text-gray-500 text-left border-b border-gray-700">
+							<tr>
+								<th class="py-1 pr-2">Scope</th>
+								<th class="py-1 pr-2">Key</th>
+								<th class="py-1 pr-2">Value</th>
+								<th class="py-1 pr-2">Updated</th>
+								<th class="py-1"></th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each secrets as s (s.id)}
+								<tr class="border-b border-gray-700/50">
+									<td class="py-1 pr-2">
+										<Badge color={s.scope === 'global' ? 'blue' : 'green'}>
+											{s.scope}{s.slug ? `: ${s.slug}` : ''}
+										</Badge>
+									</td>
+									<td class="py-1 pr-2 mono text-gray-200">{s.key}</td>
+									<td class="py-1 pr-2 mono text-gray-300">
+										{revealedId === s.id && revealedValue ? revealedValue : '••••••••'}
+									</td>
+									<td class="py-1 pr-2 text-gray-500">
+										{new Date(s.updated_at).toLocaleString()}
+									</td>
+									<td class="py-1 text-right whitespace-nowrap">
+										<Button color="alternative" size="xs" onclick={() => handleReveal(s.id)}>
+											{revealedId === s.id ? 'Hide' : 'Reveal'}
+										</Button>
+										<Button color="red" size="xs" onclick={() => handleDeleteSecret(s.id)}>
+											Delete
+										</Button>
+									</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				{/if}
+			</Card>
+
+			<!-- Add new secret -->
+			<Card class="bg-gray-800 border-gray-700 max-w-none">
+				<Heading tag="h3" class="text-base mb-4">Add a secret</Heading>
+				{#if secretMessage}
+					<Alert color={secretMessageErr ? 'red' : 'green'} class="text-xs py-2 mb-2">
+						{secretMessage}
+					</Alert>
+				{/if}
+				<form onsubmit={(e) => { e.preventDefault(); handleAddSecret(); }} class="space-y-3">
+					<div>
+						<Label class="text-xs mb-1">Scope</Label>
+						<div class="flex gap-3 text-sm">
+							<label class="flex items-center gap-1">
+								<input type="radio" bind:group={newSecretScope} value="global" />
+								Global
+							</label>
+							<label class="flex items-center gap-1">
+								<input type="radio" bind:group={newSecretScope} value="repo" />
+								Per-repo
+							</label>
+						</div>
+					</div>
+					{#if newSecretScope === 'repo'}
+						<div>
+							<Label for="sec-slug" class="text-xs mb-1">Repository slug</Label>
+							<Input id="sec-slug" type="text" bind:value={newSecretSlug}
+								placeholder="owner/repo" disabled={savingSecret} size="sm" />
+						</div>
+					{/if}
+					<div>
+						<Label for="sec-key" class="text-xs mb-1">Key</Label>
+						<Input id="sec-key" type="text" bind:value={newSecretKey}
+							placeholder="github_token, anthropic_api_key, …"
+							disabled={savingSecret} size="sm" />
+						<Helper class="text-xs mt-1">
+							Common keys: <code>github_token</code>, <code>anthropic_oauth_token</code>,
+							<code>anthropic_api_key</code>.
+						</Helper>
+					</div>
+					<div>
+						<Label for="sec-value" class="text-xs mb-1">Value</Label>
+						<Input id="sec-value" type="password" bind:value={newSecretValue}
+							placeholder="paste secret value" disabled={savingSecret} size="sm" />
+					</div>
+					<Button type="submit" color="blue" size="sm" class="w-full"
+						disabled={savingSecret || !newSecretKey.trim() || !newSecretValue
+							|| (newSecretScope === 'repo' && !newSecretSlug.trim())}>
+						{savingSecret ? 'Saving...' : 'Save secret'}
+					</Button>
+				</form>
+			</Card>
+		</div>
 	</TabItem>
 </Tabs>

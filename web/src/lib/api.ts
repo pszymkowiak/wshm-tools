@@ -387,3 +387,40 @@ export function fetchLogs(opts: { tail?: number; level?: string; since?: number 
 	const qs = params.toString();
 	return apiGet<LogsResponse>(`/logs${qs ? `?${qs}` : ''}`);
 }
+
+export interface SecretRecord {
+	id: number;
+	scope: 'global' | 'repo';
+	slug: string | null;
+	key: string;
+	value: string;     // always "••••••••" except after a reveal
+	updated_at: string;
+	updated_by: number | null;
+}
+
+export function fetchSecrets(): Promise<{ secrets: SecretRecord[] }> {
+	return apiGet('/secrets');
+}
+
+export function putSecret(input: {
+	scope: 'global' | 'repo';
+	slug?: string;
+	key: string;
+	value: string;
+}): Promise<{ id: number }> {
+	return apiPost('/secrets', input);
+}
+
+export async function revealSecret(id: number): Promise<{ value: string }> {
+	const res = await fetch(`${BASE}/secrets/${id}/reveal`, { method: 'POST' });
+	const json = await res.json();
+	if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+	return json;
+}
+
+export async function deleteSecret(id: number): Promise<{ status: string }> {
+	const res = await fetch(`${BASE}/secrets/${id}`, { method: 'DELETE' });
+	const json = await res.json();
+	if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
+	return json;
+}

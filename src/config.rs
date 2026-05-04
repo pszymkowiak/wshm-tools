@@ -1537,6 +1537,20 @@ full_sync_interval_hours = 24
     }
 
     pub fn github_token(&self) -> Result<String> {
+        // 1. Encrypted secret store (per-repo override → global → env fallback).
+        if let Some(store) = crate::secrets::global() {
+            if let Some(v) = crate::secrets::resolve(
+                Some(&store),
+                Some(&self.repo_slug()),
+                "github_token",
+                "GITHUB_TOKEN",
+            ) {
+                if !v.trim().is_empty() {
+                    return Ok(v);
+                }
+            }
+        }
+        // 2. Legacy env vars + gh CLI fallback (kept for OSS standalone).
         let token = std::env::var("WSHM_TOKEN")
             .or_else(|_| std::env::var("GITHUB_TOKEN"))
             .or_else(|_| gh_auth_token())

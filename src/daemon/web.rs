@@ -53,6 +53,11 @@ pub struct WebState {
     /// Optional in-memory log buffer fed by the tracing layer. When `Some`,
     /// `GET /api/v1/logs` returns the daemon's recent log lines.
     pub logs: Option<Arc<crate::daemon::log_buffer::LogBuffer>>,
+    /// Optional encrypted secret store backing the Settings → Secrets tab.
+    /// When `Some`, the `/api/v1/secrets/*` routes are functional. Using a
+    /// trait object so OSS (SQLite) and Pro (Postgres) can plug their own
+    /// backend in.
+    pub secrets: Option<Arc<dyn crate::secrets::SecretStore>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1903,6 +1908,176 @@ async fn api_auth_anthropic(Json(body): Json<serde_json::Value>) -> impl IntoRes
 // Router builder
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Encrypted secrets API (admin only)
+// ---------------------------------------------------------------------------
+
+/// GET /api/v1/secrets -- list all stored secrets, values masked.
+async fn api_secrets_list(
+    State(state): State<Arc<WebState>>,
+    user: axum::Extension<Option<crate::auth::User>>,
+) -> Response {
+    if let Err(e) = require_admin(&user) {
+        return e;
+    }
+    let store = match state.secrets.as_ref() {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "secret store not configured (set WSHM_MASTER_KEY)"})),
+            )
+                .into_response();
+        }
+    };
+    match store.list().await {
+        Ok(rows) => Json(json!({ "secrets": rows })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("{e}")})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/v1/secrets -- upsert a secret. Body:
+///   {"scope":"global"|"repo", "slug":"owner/repo"?, "key":"...", "value":"..."}
+async fn api_secrets_put(
+    State(state): State<Arc<WebState>>,
+    user: axum::Extension<Option<crate::auth::User>>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let admin = match require_admin(&user) {
+        Ok(u) => u,
+        Err(e) => return e,
+    };
+    let store = match state.secrets.as_ref() {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "secret store not configured"})),
+            )
+                .into_response();
+        }
+    };
+    let scope = match body
+        .get("scope")
+        .and_then(|v| v.as_str())
+        .map(crate::secrets::Scope::from_str)
+    {
+        Some(Ok(s)) => s,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "scope must be 'global' or 'repo'"})),
+            )
+                .into_response();
+        }
+    };
+    let slug = body.get("slug").and_then(|v| v.as_str());
+    let key = body.get("key").and_then(|v| v.as_str()).unwrap_or("");
+    let value = body.get("value").and_then(|v| v.as_str()).unwrap_or("");
+    if key.trim().is_empty() || value.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "key and value are required"})),
+        )
+            .into_response();
+    }
+    if scope == crate::secrets::Scope::Repo
+        && slug.map(str::trim).is_none_or(|s| s.is_empty())
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "slug is required for scope=repo"})),
+        )
+            .into_response();
+    }
+    let effective_slug = if scope == crate::secrets::Scope::Repo {
+        slug
+    } else {
+        None
+    };
+    match store
+        .put(scope, effective_slug, key.trim(), value, Some(admin.id))
+        .await
+    {
+        Ok(id) => (StatusCode::CREATED, Json(json!({ "id": id }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("{e}")})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/v1/secrets/{id}/reveal -- decrypt and return the plaintext.
+async fn api_secrets_reveal(
+    State(state): State<Arc<WebState>>,
+    user: axum::Extension<Option<crate::auth::User>>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Response {
+    let admin = match require_admin(&user) {
+        Ok(u) => u,
+        Err(e) => return e,
+    };
+    let store = match state.secrets.as_ref() {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "secret store not configured"})),
+            )
+                .into_response();
+        }
+    };
+    match store.reveal(id, Some(admin.id)).await {
+        Ok(Some(v)) => Json(json!({ "value": v })).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "not found"})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("{e}")})),
+        )
+            .into_response(),
+    }
+}
+
+/// DELETE /api/v1/secrets/{id}
+async fn api_secrets_delete(
+    State(state): State<Arc<WebState>>,
+    user: axum::Extension<Option<crate::auth::User>>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Response {
+    let admin = match require_admin(&user) {
+        Ok(u) => u,
+        Err(e) => return e,
+    };
+    let store = match state.secrets.as_ref() {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "secret store not configured"})),
+            )
+                .into_response();
+        }
+    };
+    match store.delete(id, Some(admin.id)).await {
+        Ok(true) => Json(json!({"status": "ok"})).into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("{e}")})),
+        )
+            .into_response(),
+    }
+}
+
 /// GET /api/v1/logs -- tail of the daemon's in-memory log buffer.
 ///
 /// Query: `tail` (default 200, max 5000), `level` (ERROR/WARN/INFO/DEBUG/TRACE),
@@ -1978,6 +2153,9 @@ pub fn oss_api_routes() -> Router<Arc<WebState>> {
             axum::routing::patch(api_users_update).delete(api_users_delete),
         )
         .route("/api/v1/logs", get(api_logs))
+        .route("/api/v1/secrets", get(api_secrets_list).post(api_secrets_put))
+        .route("/api/v1/secrets/{id}", axum::routing::delete(api_secrets_delete))
+        .route("/api/v1/secrets/{id}/reveal", post(api_secrets_reveal))
         .route("/api/v1/summary", get(api_summary))
 }
 
@@ -2003,7 +2181,7 @@ pub async fn auth_layer(state: State<Arc<WebState>>, req: Request<Body>, next: N
 /// The `/health` endpoint is always public.
 /// All other routes serve the embedded Svelte SPA.
 pub fn web_routes(multi: Arc<MultiDaemonState>) -> Router {
-    web_routes_with_extensions(multi, None, None, None, None)
+    web_routes_with_extensions(multi, None, None, None, None, None)
 }
 
 /// Build the web UI router with optional extensions.
@@ -2022,10 +2200,16 @@ pub fn web_routes_with_extensions(
     multi: Arc<MultiDaemonState>,
     users: Option<Arc<crate::auth::UserStore>>,
     logs: Option<Arc<crate::daemon::log_buffer::LogBuffer>>,
+    secrets: Option<Arc<dyn crate::secrets::SecretStore>>,
     extra_api: Option<Router<Arc<WebState>>>,
     spa_override: Option<Router<Arc<WebState>>>,
 ) -> Router {
-    let state = Arc::new(WebState { multi, users, logs });
+    let state = Arc::new(WebState {
+        multi,
+        users,
+        logs,
+        secrets,
+    });
 
     let mut api_routes = oss_api_routes();
     if let Some(extra) = extra_api {
