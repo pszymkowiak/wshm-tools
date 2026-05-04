@@ -19,6 +19,16 @@ async function apiGet<T>(path: string, params?: Record<string, string>): Promise
 	if (!res.ok) {
 		throw new Error(`API error: ${res.status} ${res.statusText}`);
 	}
+	// oauth2-proxy returns HTML (302 → Google login) when the SSO session
+	// expired silently. Without this guard `res.json()` throws an opaque
+	// "Unexpected token '<'" — instead we redirect to /login so the user
+	// re-authenticates and the next call succeeds.
+	const ct = res.headers.get('content-type') ?? '';
+	if (ct.includes('text/html')) {
+		try { window.location.href = '/oauth2/sign_in?rd=' + encodeURIComponent(window.location.pathname); }
+		catch { /* SSR */ }
+		throw new Error('Session expired — redirecting to sign in');
+	}
 	return res.json();
 }
 
