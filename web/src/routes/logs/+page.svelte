@@ -4,7 +4,8 @@
 	import { Heading, Button, Select, Toggle } from 'flowbite-svelte';
 
 	const POLL_MS = 2000;
-	const TAIL_INITIAL = 500;
+	const TAIL_INITIAL = 100;
+	const MAX_VISIBLE = 500;
 
 	let entries: LogEntry[] = $state([]);
 	let lastId: number | null = $state(null);
@@ -44,8 +45,8 @@
 			});
 			if (r.entries.length > 0) {
 				entries = [...entries, ...r.entries];
-				if (entries.length > 5000) {
-					entries = entries.slice(-5000);
+				if (entries.length > MAX_VISIBLE) {
+					entries = entries.slice(-MAX_VISIBLE);
 				}
 				lastId = r.last_id;
 				scheduleScroll();
@@ -146,7 +147,7 @@
 <div
 	bind:this={logContainer}
 	class="rounded border border-gray-700 bg-gray-950 p-3 font-mono text-xs leading-5 overflow-auto"
-	style="height: calc(100vh - 240px); min-height: 300px;"
+	style="height: calc(100vh - 200px); min-height: 280px; max-height: 75vh;"
 >
 	{#if entries.length === 0}
 		<div class="text-gray-500">No log entries yet.</div>
