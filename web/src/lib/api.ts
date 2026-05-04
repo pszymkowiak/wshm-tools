@@ -9,8 +9,13 @@ function repoParams(): Record<string, string> {
 }
 
 async function apiGet<T>(path: string, params?: Record<string, string>): Promise<T> {
+	// `new URL` already splits "/logs?tail=100" into pathname="/logs" and
+	// searchParams="tail=100". We prepend BASE to `url.pathname` (NOT the
+	// raw `path`) so a literal '?' in the original path is not
+	// percent-encoded into the pathname (oauth2-proxy then sees a path
+	// that doesn't match any backend route and falls through to the SPA).
 	const url = new URL(path, window.location.origin);
-	url.pathname = `${BASE}${path}`;
+	url.pathname = `${BASE}${url.pathname}`;
 	const merged = { ...repoParams(), ...params };
 	for (const [key, value] of Object.entries(merged)) {
 		url.searchParams.set(key, value);
