@@ -1794,19 +1794,38 @@ async fn api_summary(
 }
 
 /// GET /api/v1/auth/status -- which credentials are detected.
-async fn api_auth_status() -> impl IntoResponse {
+///
+/// Checks (in order): encrypted secret store (global scope), legacy
+/// `.wshm/credentials` file, env vars. Returns `github=false` when none
+/// is set so the UI can render an "Anonymous mode" banner.
+async fn api_auth_status(State(state): State<Arc<WebState>>) -> impl IntoResponse {
     let creds = crate::login::load_credentials();
 
-    let github = creds.contains_key("GITHUB_TOKEN")
+    let secrets_has = |key: &str| -> bool {
+        if let Some(store) = state.secrets.as_ref() {
+            if let Ok(Some(v)) =
+                store.get_blocking(crate::secrets::Scope::Global, None, key)
+            {
+                return !v.is_empty();
+            }
+        }
+        false
+    };
+
+    let github = secrets_has("github_token")
+        || creds.contains_key("GITHUB_TOKEN")
         || std::env::var("GITHUB_TOKEN").is_ok()
         || std::env::var("WSHM_TOKEN").is_ok();
 
-    let anthropic_kind = if creds.contains_key("ANTHROPIC_OAUTH_TOKEN")
+    let anthropic_kind = if secrets_has("anthropic_oauth_token")
+        || creds.contains_key("ANTHROPIC_OAUTH_TOKEN")
         || std::env::var("ANTHROPIC_OAUTH_TOKEN").is_ok()
         || std::env::var("CLAUDE_CODE_OAUTH_TOKEN").is_ok()
     {
         Some("oauth")
-    } else if creds.contains_key("ANTHROPIC_API_KEY") || std::env::var("ANTHROPIC_API_KEY").is_ok()
+    } else if secrets_has("anthropic_api_key")
+        || creds.contains_key("ANTHROPIC_API_KEY")
+        || std::env::var("ANTHROPIC_API_KEY").is_ok()
     {
         Some("api_key")
     } else {

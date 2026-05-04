@@ -12,13 +12,29 @@ pub struct Client {
     pub comment_marker: String,
     /// Shared HTTP client for raw requests (diff fetches, etc.)
     pub http: reqwest::Client,
+    /// Whether the client was built with a personal token. When `false`,
+    /// requests go to GitHub anonymously — public repo reads still work
+    /// but the rate limit drops to 60 req/h and any mutating endpoint
+    /// (post comment, post label, create PR) will fail with 403/401.
+    /// Pipelines that mutate must check this flag and skip with a warning.
+    pub authenticated: bool,
 }
 
 impl Client {
     pub fn new(config: &Config) -> Result<Self> {
-        let token = config.github_token()?;
-        let octocrab = Octocrab::builder()
-            .personal_token(token)
+        let token = config.github_token_optional();
+        let authenticated = token.is_some();
+        let mut builder = Octocrab::builder();
+        if let Some(t) = token {
+            builder = builder.personal_token(t);
+        } else {
+            tracing::warn!(
+                target: "wshm_core::github",
+                "GitHub client built without a token — anonymous mode (60 req/h, public repos read-only). \
+                 Add a token in Settings → Secrets for full functionality."
+            );
+        }
+        let octocrab = builder
             .build()
             .context("Failed to create GitHub client")?;
 
@@ -34,7 +50,22 @@ impl Client {
             repo: config.repo_name.clone(),
             comment_marker: config.branding.comment_marker(),
             http,
+            authenticated,
         })
+    }
+
+    /// Returns Err with a descriptive message when the client is unauthenticated.
+    /// Pipelines that mutate the repo (label, comment, create PR) call this
+    /// at the top of their function so the daemon logs why an action was
+    /// skipped.
+    pub fn require_auth(&self, action: &str) -> Result<()> {
+        if !self.authenticated {
+            anyhow::bail!(
+                "{action}: GitHub auth required. Add a github_token in \
+                 Settings → Secrets, or set GITHUB_TOKEN."
+            );
+        }
+        Ok(())
     }
 
     /// Check if a user is a collaborator (write access or above) on the repo.

@@ -3,7 +3,7 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import { selectedRepo, theme, type Theme } from '$lib/stores';
-	import { fetchStatus, fetchMe, type RepoInfo, type Me } from '$lib/api';
+	import { fetchStatus, fetchMe, fetchAuthStatus, type RepoInfo, type Me, type AuthStatus } from '$lib/api';
 	import '../app.css';
 
 	let { children }: { children: Snippet } = $props();
@@ -13,6 +13,8 @@
 	let collapsed: boolean = $state(false);
 	let currentTheme: Theme = $state('dark');
 	let me: Me | null = $state(null);
+	let authStatus: AuthStatus | null = $state(null);
+	let bannerDismissed: boolean = $state(false);
 	theme.subscribe((t) => (currentTheme = t));
 
 	function meLabel(m: Me): string {
@@ -89,7 +91,18 @@
 		try {
 			me = await fetchMe();
 		} catch { /* ignore — public-page calls or unauth states */ }
+		try {
+			authStatus = await fetchAuthStatus();
+		} catch { /* ignore */ }
+		try {
+			bannerDismissed = localStorage.getItem('wshm-anon-banner-dismissed') === 'true';
+		} catch { /* ignore */ }
 	});
+
+	function dismissBanner() {
+		bannerDismissed = true;
+		try { localStorage.setItem('wshm-anon-banner-dismissed', 'true'); } catch { /* ignore */ }
+	}
 </script>
 
 {#if isLoginRoute}
@@ -249,6 +262,29 @@
 	</nav>
 
 	<main class="transition-[margin-left] duration-150 p-3 max-w-none" style="margin-left: {collapsed ? '52px' : '180px'}">
+		{#if authStatus && !authStatus.github && !bannerDismissed}
+			<div class="mb-3 flex items-start justify-between gap-3 rounded-md border border-yellow-700/60 bg-yellow-900/20 px-3 py-2 text-sm">
+				<div class="flex items-start gap-2">
+					<span class="text-yellow-400 text-base leading-tight">!</span>
+					<div>
+						<span class="text-yellow-200 font-semibold">Anonymous GitHub mode.</span>
+						<span class="text-yellow-100/90">
+							Public repos sync read-only with a 60 req/h limit; labels, comments, and auto-fix actions are skipped.
+						</span>
+						<a href="/settings" class="ml-1 text-blue-300 hover:text-blue-200 underline">
+							Add a github_token in Settings → Secrets
+						</a>
+						for full functionality.
+					</div>
+				</div>
+				<button
+					type="button"
+					class="text-yellow-300/70 hover:text-yellow-200 flex-shrink-0"
+					onclick={dismissBanner}
+					title="Dismiss for this browser"
+				>×</button>
+			</div>
+		{/if}
 		{@render children()}
 	</main>
 </div>

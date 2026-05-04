@@ -1537,6 +1537,15 @@ full_sync_interval_hours = 24
     }
 
     pub fn github_token(&self) -> Result<String> {
+        self.github_token_optional()
+            .context("No GitHub token found. Set GITHUB_TOKEN, WSHM_TOKEN, authenticate with `gh auth login`, or add a github_token in Settings → Secrets")
+    }
+
+    /// Resolve a GitHub token without bailing when absent. Returns `None` so
+    /// the daemon can run in anonymous read-only mode against public repos
+    /// (rate-limited to 60 req/h). Mutating endpoints (post labels/comments,
+    /// create PRs) must check token presence before calling.
+    pub fn github_token_optional(&self) -> Option<String> {
         // 1. Encrypted secret store (per-repo override → global → env fallback).
         if let Some(store) = crate::secrets::global() {
             if let Some(v) = crate::secrets::resolve(
@@ -1546,19 +1555,19 @@ full_sync_interval_hours = 24
                 "GITHUB_TOKEN",
             ) {
                 if !v.trim().is_empty() {
-                    return Ok(v);
+                    return Some(v);
                 }
             }
         }
         // 2. Legacy env vars + gh CLI fallback (kept for OSS standalone).
         let token = std::env::var("WSHM_TOKEN")
-            .or_else(|_| std::env::var("GITHUB_TOKEN"))
-            .or_else(|_| gh_auth_token())
-            .context("No GitHub token found. Set GITHUB_TOKEN, WSHM_TOKEN, or authenticate with `gh auth login`")?;
+            .ok()
+            .or_else(|| std::env::var("GITHUB_TOKEN").ok())
+            .or_else(|| gh_auth_token().ok())?;
         if token.trim().is_empty() {
-            anyhow::bail!("GitHub token is empty. Check your GITHUB_TOKEN or WSHM_TOKEN environment variable.");
+            return None;
         }
-        Ok(token)
+        Some(token)
     }
 }
 
