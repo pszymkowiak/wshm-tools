@@ -27,6 +27,7 @@ pub enum Tab {
     Activity,
     Triage,
     Changelog,
+    Logs,
 }
 
 impl Tab {
@@ -42,6 +43,7 @@ impl Tab {
             Tab::Activity => "Activity",
             Tab::Triage => "Triage",
             Tab::Changelog => "Changelog",
+            Tab::Logs => "Logs",
         }
     }
 
@@ -57,6 +59,7 @@ impl Tab {
             Tab::Activity,
             Tab::Triage,
             Tab::Changelog,
+            Tab::Logs,
         ]
     }
 }
@@ -168,6 +171,7 @@ pub struct App {
     pub activity: Vec<TriageResultRow>,
     pub triage_all: Vec<TriageResultRow>,
     pub changelog: Vec<ChangelogEntry>,
+    pub process_logs: Vec<crate::daemon::log_buffer::LogEntry>,
     pub logs: Vec<LogEntry>,
     pub actions: Vec<ActionItem>,
     pub repos: Vec<RepoRow>,
@@ -272,6 +276,7 @@ impl App {
             activity: Vec::new(),
             triage_all: Vec::new(),
             changelog: Vec::new(),
+            process_logs: Vec::new(),
             logs: Vec::new(),
             actions: Vec::new(),
             repos: Vec::new(),
@@ -634,8 +639,24 @@ impl App {
             Tab::Activity => self.logs.len(),
             Tab::Triage => self.triage_all.len(),
             Tab::Changelog => self.changelog.len(),
+            Tab::Logs => self.process_logs.len(),
             Tab::Summary => 0,
         }
+    }
+
+    /// Snapshot the in-memory tracing log buffer (populated by main.rs's
+    /// LogLayer). Available because the TUI runs through the same process
+    /// init that sets up the buffer for the daemon.
+    pub fn load_process_logs(&mut self) {
+        let buf = match crate::daemon::log_buffer::global() {
+            Some(b) => b,
+            None => {
+                self.process_logs = Vec::new();
+                return;
+            }
+        };
+        let handle = tokio::runtime::Handle::current();
+        self.process_logs = handle.block_on(buf.snapshot(Some(500), None, None));
     }
 
     /// Load action items across all repos (prioritized TODO list)
