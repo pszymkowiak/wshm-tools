@@ -13,6 +13,7 @@
 		type Me,
 		type AuthStatus
 	} from '$lib/api';
+	import { canAccessRoute } from '$lib/permissions';
 	import {
 		SidebarGroup,
 		SidebarItem,
@@ -52,7 +53,7 @@
 		| 'dashboard' | 'summary' | 'issues' | 'prs' | 'triage' | 'queue'
 		| 'changelog' | 'revert' | 'backups' | 'activity' | 'actions' | 'logs' | 'settings';
 
-	const navItems: { href: string; label: string; icon: IconName }[] = [
+	const allNavItems: { href: string; label: string; icon: IconName }[] = [
 		{ href: '/', label: 'Dashboard', icon: 'dashboard' },
 		{ href: '/summary', label: 'Summary', icon: 'summary' },
 		{ href: '/issues', label: 'Issues', icon: 'issues' },
@@ -67,6 +68,7 @@
 		{ href: '/logs', label: 'Logs', icon: 'logs' },
 		{ href: '/settings', label: 'Settings', icon: 'settings' }
 	];
+	let navItems = $derived(allNavItems.filter((i) => canAccessRoute(me?.role, i.href)));
 
 	function toggleCollapse() {
 		collapsed = !collapsed;

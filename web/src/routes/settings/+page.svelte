@@ -32,10 +32,16 @@
 		putSecret,
 		revealSecret,
 		deleteSecret,
+		fetchUsers,
+		createUser,
+		updateUser,
+		deleteUser,
 		type LicenseInfo,
 		type ReposListResponse,
 		type AuthStatus,
 		type SecretRecord,
+		type UserRecord,
+		type Role,
 	} from '$lib/api';
 
 	let colors: ColorConfig = $state({ ...colorConfig.defaults });
@@ -136,6 +142,84 @@
 		}
 	}
 
+	// Users (RBAC)
+	let users: UserRecord[] = $state([]);
+	let usersError: string | null = $state(null);
+	let newUserEmail: string = $state('');
+	let newUserUsername: string = $state('');
+	let newUserPassword: string = $state('');
+	let newUserRole: Role = $state('member');
+	let creatingUser: boolean = $state(false);
+	let userMessage: string | null = $state(null);
+	let userMessageErr: boolean = $state(false);
+	let resetPwId: number | null = $state(null);
+	let resetPwValue: string = $state('');
+
+	async function refreshUsers() {
+		try {
+			const r = await fetchUsers();
+			users = r.users;
+			usersError = null;
+		} catch (e) {
+			usersError = e instanceof Error ? e.message : 'load failed';
+		}
+	}
+
+	async function handleCreateUser() {
+		if (!newUserEmail.trim() || !newUserPassword) return;
+		creatingUser = true; userMessage = null; userMessageErr = false;
+		try {
+			await createUser({
+				email: newUserEmail.trim(),
+				username: newUserUsername.trim() || undefined,
+				password: newUserPassword,
+				role: newUserRole,
+			});
+			userMessage = `User ${newUserEmail} created.`;
+			newUserEmail = ''; newUserUsername = ''; newUserPassword = ''; newUserRole = 'member';
+			await refreshUsers();
+		} catch (e) {
+			userMessage = e instanceof Error ? e.message : 'create failed';
+			userMessageErr = true;
+		}
+		creatingUser = false;
+	}
+
+	async function handleRoleChange(id: number, role: Role) {
+		try {
+			await updateUser(id, { role });
+			await refreshUsers();
+		} catch (e) {
+			usersError = e instanceof Error ? e.message : 'role update failed';
+		}
+	}
+
+	async function handleResetPassword(id: number) {
+		if (!resetPwValue || resetPwValue.length < 6) {
+			usersError = 'Password must be at least 6 characters';
+			return;
+		}
+		try {
+			await updateUser(id, { password: resetPwValue });
+			resetPwId = null;
+			resetPwValue = '';
+			userMessage = 'Password updated.';
+			userMessageErr = false;
+		} catch (e) {
+			usersError = e instanceof Error ? e.message : 'password update failed';
+		}
+	}
+
+	async function handleDeleteUser(id: number, label: string) {
+		if (!confirm(`Delete user ${label}? This cannot be undone.`)) return;
+		try {
+			await deleteUser(id);
+			await refreshUsers();
+		} catch (e) {
+			usersError = e instanceof Error ? e.message : 'delete failed';
+		}
+	}
+
 	function saveColors() { colorConfig.save(colors); }
 	function resetColors() { colorConfig.reset(); colors = { ...colorConfig.defaults }; }
 
@@ -212,6 +296,7 @@
 		await refreshRepos();
 		await refreshAuth();
 		await refreshSecrets();
+		await refreshUsers();
 	});
 </script>
 
@@ -630,6 +715,162 @@
 						disabled={savingSecret || !newSecretKey.trim() || !newSecretValue
 							|| (newSecretScope === 'repo' && !newSecretSlug.trim())}>
 						{savingSecret ? 'Saving...' : 'Save secret'}
+					</Button>
+				</form>
+			</Card>
+		</div>
+	</TabItem>
+
+	<!-- ========================= USERS (RBAC) ========================= -->
+	<TabItem title="Users">
+		<div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+			<!-- Existing users (left, 2/3) -->
+			<Card class="bg-gray-800 border-gray-700 max-w-none lg:col-span-2">
+				<Heading tag="h3" class="text-base mb-4">User accounts</Heading>
+				<Helper class="mb-3">
+					Local accounts and SSO-upserted users. Roles control access to admin
+					pages (Settings) and mutating actions.
+				</Helper>
+				{#if usersError}
+					<Alert color="red" class="text-xs py-2 mb-2">{usersError}</Alert>
+				{/if}
+				{#if userMessage}
+					<Alert color={userMessageErr ? 'red' : 'green'} class="text-xs py-2 mb-2">
+						{userMessage}
+					</Alert>
+				{/if}
+				{#if users.length === 0}
+					<p class="text-sm text-gray-500">No users yet.</p>
+				{:else}
+					<Table hoverable={true} class="text-xs">
+						<TableHead>
+							<TableHeadCell>Identity</TableHeadCell>
+							<TableHeadCell>Auth</TableHeadCell>
+							<TableHeadCell>Role</TableHeadCell>
+							<TableHeadCell>Last login</TableHeadCell>
+							<TableHeadCell><span class="sr-only">Actions</span></TableHeadCell>
+						</TableHead>
+						<TableBody>
+							{#each users as u (u.id)}
+								<TableBodyRow>
+									<TableBodyCell>
+										<div class="mono text-gray-200">{u.email}</div>
+										{#if u.username && u.username !== u.email}
+											<div class="text-[0.65rem] text-gray-500">@{u.username}</div>
+										{/if}
+									</TableBodyCell>
+									<TableBodyCell>
+										<Badge color={u.sso_provider ? 'purple' : 'blue'}>
+											{u.sso_provider ?? 'local'}
+										</Badge>
+									</TableBodyCell>
+									<TableBodyCell>
+										<select
+											class="rounded border border-gray-600 bg-gray-900 px-1.5 py-0.5 text-xs text-gray-200"
+											value={u.role}
+											onchange={(e) => handleRoleChange(u.id, (e.currentTarget as HTMLSelectElement).value as Role)}
+										>
+											<option value="admin">admin</option>
+											<option value="member">member</option>
+											<option value="viewer">viewer</option>
+										</select>
+									</TableBodyCell>
+									<TableBodyCell class="text-gray-500">
+										{u.last_login_at ? new Date(u.last_login_at).toLocaleString() : '—'}
+									</TableBodyCell>
+									<TableBodyCell class="text-right whitespace-nowrap">
+										{#if resetPwId === u.id}
+											<Input
+												type="password"
+												bind:value={resetPwValue}
+												size="sm"
+												placeholder="new pw (min 6)"
+												class="!py-0.5 !px-1 inline-block w-32 mr-1"
+											/>
+											<Button color="blue" size="xs" onclick={() => handleResetPassword(u.id)}>
+												Save
+											</Button>
+											<Button color="alternative" size="xs" onclick={() => { resetPwId = null; resetPwValue = ''; }}>
+												Cancel
+											</Button>
+										{:else}
+											<Button color="alternative" size="xs" onclick={() => { resetPwId = u.id; resetPwValue = ''; }}>
+												Reset password
+											</Button>
+											<Button color="red" size="xs" onclick={() => handleDeleteUser(u.id, u.email)}>
+												Delete
+											</Button>
+										{/if}
+									</TableBodyCell>
+								</TableBodyRow>
+							{/each}
+						</TableBody>
+					</Table>
+				{/if}
+			</Card>
+
+			<!-- Create new user (right, 1/3) -->
+			<Card class="bg-gray-800 border-gray-700 max-w-none">
+				<Heading tag="h3" class="text-base mb-4">Create user</Heading>
+				<form onsubmit={(e) => { e.preventDefault(); handleCreateUser(); }} class="space-y-3">
+					<div>
+						<Label for="user-email" class="text-xs mb-1">Email or identifier</Label>
+						<Input
+							id="user-email"
+							type="text"
+							bind:value={newUserEmail}
+							placeholder="alice@example.com or alice"
+							disabled={creatingUser}
+							size="sm"
+						/>
+					</div>
+					<div>
+						<Label for="user-username" class="text-xs mb-1">Username (optional)</Label>
+						<Input
+							id="user-username"
+							type="text"
+							bind:value={newUserUsername}
+							placeholder="alice"
+							disabled={creatingUser}
+							size="sm"
+						/>
+					</div>
+					<div>
+						<Label for="user-password" class="text-xs mb-1">Password</Label>
+						<Input
+							id="user-password"
+							type="password"
+							bind:value={newUserPassword}
+							placeholder="min 6 chars"
+							disabled={creatingUser}
+							size="sm"
+						/>
+					</div>
+					<div>
+						<Label class="text-xs mb-1">Role</Label>
+						<div class="flex flex-col gap-1 text-sm">
+							<Radio bind:group={newUserRole} value="admin">
+								<span class="font-semibold">admin</span>
+								<span class="text-xs text-gray-500 ml-1">— full control</span>
+							</Radio>
+							<Radio bind:group={newUserRole} value="member">
+								<span class="font-semibold">member</span>
+								<span class="text-xs text-gray-500 ml-1">— actions on PRs/issues</span>
+							</Radio>
+							<Radio bind:group={newUserRole} value="viewer">
+								<span class="font-semibold">viewer</span>
+								<span class="text-xs text-gray-500 ml-1">— read-only</span>
+							</Radio>
+						</div>
+					</div>
+					<Button
+						type="submit"
+						color="blue"
+						size="sm"
+						class="w-full"
+						disabled={creatingUser || !newUserEmail.trim() || !newUserPassword || newUserPassword.length < 6}
+					>
+						{creatingUser ? 'Creating…' : 'Create user'}
 					</Button>
 				</form>
 			</Card>
