@@ -41,6 +41,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Tab::Activity => draw_activity(f, app, chunks[2]),
         Tab::Triage => draw_triage(f, app, chunks[2]),
         Tab::Changelog => draw_changelog(f, app, chunks[2]),
+        Tab::Logs => draw_logs(f, app, chunks[2]),
     }
 
     // Action detail popup
@@ -1505,9 +1506,74 @@ fn draw_changelog(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(para, area);
 }
 
+fn level_color(level: &str) -> Color {
+    match level {
+        "ERROR" => Color::Red,
+        "WARN" => Color::Yellow,
+        "INFO" => Color::Cyan,
+        "DEBUG" => Color::Gray,
+        _ => Color::DarkGray,
+    }
+}
+
+fn draw_logs(f: &mut Frame, app: &App, area: Rect) {
+    if app.process_logs.is_empty() {
+        let text = Paragraph::new(
+            "No log entries yet.\n\nLogs from this TUI process and any spawned async tasks \
+             land here. Run a sync (F5) or wait for periodic activity.",
+        )
+        .block(Block::default().borders(Borders::ALL).title(" Logs "))
+        .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(text, area);
+        return;
+    }
+
+    let visible_rows = area.height.saturating_sub(2) as usize;
+    let total = app.process_logs.len();
+    let start = total.saturating_sub(visible_rows + app.scroll_offset);
+    let end = total.saturating_sub(app.scroll_offset);
+
+    let lines: Vec<Line> = app.process_logs[start..end]
+        .iter()
+        .map(|e| {
+            let time = e
+                .at
+                .split('T')
+                .nth(1)
+                .and_then(|s| s.split('.').next())
+                .unwrap_or(&e.at)
+                .to_string();
+            Line::from(vec![
+                Span::styled(time, Style::default().fg(Color::DarkGray)),
+                Span::raw(" "),
+                Span::styled(
+                    format!("{:5}", e.level),
+                    Style::default()
+                        .fg(level_color(e.level))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    truncate(&e.target, 32),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::raw(" "),
+                Span::raw(truncate(&e.message, 200)),
+            ])
+        })
+        .collect();
+
+    let para = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Logs ({total} entries, j/k to scroll) ")),
+    );
+    f.render_widget(para, area);
+}
+
 fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     let mut spans = vec![
-        Span::styled(" 1-9 ", Style::default().fg(Color::Cyan)),
+        Span::styled(" 1-9,0 ", Style::default().fg(Color::Cyan)),
         Span::raw("tabs  "),
         Span::styled("j/k ", Style::default().fg(Color::Cyan)),
         Span::raw("scroll  "),

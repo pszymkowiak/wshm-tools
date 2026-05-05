@@ -50,11 +50,18 @@ fn run_loop(
     loop {
         terminal.draw(|f| ui::draw(f, app))?;
 
-        // Auto-refresh logs every 5 seconds when on Activity tab
+        // Auto-refresh: Activity tab pulls journalctl every 5s; Logs tab
+        // re-snapshots the in-memory tracing buffer every 1s for liveness.
         if app.active_tab == app::Tab::Activity
             && last_log_refresh.elapsed() > std::time::Duration::from_secs(5)
         {
             app.refresh_logs();
+            *last_log_refresh = std::time::Instant::now();
+        }
+        if app.active_tab == app::Tab::Logs
+            && last_log_refresh.elapsed() > std::time::Duration::from_secs(1)
+        {
+            app.load_process_logs();
             *last_log_refresh = std::time::Instant::now();
         }
 
@@ -142,6 +149,10 @@ fn run_loop(
                         KeyCode::Char('9') => {
                             app.load_changelog(db);
                             app.active_tab = app::Tab::Changelog;
+                        }
+                        KeyCode::Char('0') => {
+                            app.load_process_logs();
+                            app.active_tab = app::Tab::Logs;
                         }
                         KeyCode::Enter => {
                             if app.active_tab == app::Tab::Repos {
