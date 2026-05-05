@@ -1,0 +1,13 @@
+{
+	"login.welcome": "Bienvenido a wshm",
+	"login.subtitle": "Inicia sesión para continuar",
+	"login.username": "Usuario",
+	"login.password": "Contraseña",
+	"login.usernamePlaceholder": "admin",
+	"login.submit": "Iniciar sesión",
+	"login.signingIn": "Iniciando sesión…",
+	"login.failed": "Error de inicio de sesión",
+	"login.googleButton": "Iniciar sesión con Google",
+	"login.tagline": "El mago que clasifica tus pull requests",
+	"common.or": "o"
+}

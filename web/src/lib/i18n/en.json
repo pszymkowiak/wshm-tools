@@ -8,6 +8,6 @@
 	"login.signingIn": "Signing in…",
 	"login.failed": "Login failed",
 	"login.googleButton": "Sign in with Google",
-	"login.tagline": "wshm — open-source GitHub agent",
+	"login.tagline": "The wizard who triages your pull requests",
 	"common.or": "or"
 }

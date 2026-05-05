@@ -1,0 +1,13 @@
+{
+	"login.welcome": "wshm에 오신 것을 환영합니다",
+	"login.subtitle": "계속하려면 로그인하세요",
+	"login.username": "사용자명",
+	"login.password": "비밀번호",
+	"login.usernamePlaceholder": "admin",
+	"login.submit": "로그인",
+	"login.signingIn": "로그인 중…",
+	"login.failed": "로그인 실패",
+	"login.googleButton": "Google로 로그인",
+	"login.tagline": "당신의 풀 리퀘스트를 분류하는 마법사",
+	"common.or": "또는"
+}
