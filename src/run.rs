@@ -6,7 +6,7 @@
 //! this dispatcher for non-Pro commands. Keeping a single source of truth
 //! here ensures the OSS surface stays in sync across both releases.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::cli::{Cli, Command};
 use crate::pipelines::triage::OutputFormat;
@@ -257,23 +257,26 @@ pub async fn run_oss(cli: Cli) -> Result<()> {
                 return crate::daemon::systemd::uninstall();
             }
 
-            // Multi-repo mode if --config is explicit OR if the default global
-            // config exists. With explicit --config the file may not exist yet —
-            // GlobalConfig::load returns an empty config so the user can populate
-            // it through the web UI's POST /api/v1/repos endpoint.
+            // Always run in multi-repo mode. If no ~/.wshm/global.toml exists
+            // yet, start with an empty config — the operator adds repos
+            // through Settings → Repositories at runtime via
+            // POST /api/v1/repos. We deliberately skip the legacy single-repo
+            // auto-detect (git remote of cwd) because it surprises users by
+            // pre-configuring whatever repo they happened to cd into.
             let global_path = args
                 .config
                 .clone()
                 .unwrap_or_else(crate::config::GlobalConfig::default_path);
 
-            if args.config.is_some() || global_path.exists() {
-                let global = crate::config::GlobalConfig::load(&global_path)?;
-                crate::daemon::run_multi(global, args.clone()).await?;
+            let global = if global_path.exists() {
+                crate::config::GlobalConfig::load(&global_path)?
             } else {
-                // Single-repo mode: load per-repo config
-                let config = crate::Config::load(&cli)?;
-                crate::daemon::run(config, args.clone()).await?;
-            }
+                // Parse an empty TOML so all `#[serde(default = "fn")]`
+                // attributes fire (bind = "127.0.0.1:3000" etc.).
+                toml::from_str::<crate::config::GlobalConfig>("")
+                    .context("building empty default global config")?
+            };
+            crate::daemon::run_multi(global, args.clone()).await?;
         }
         None => {
             let config = crate::Config::load(&cli)?;

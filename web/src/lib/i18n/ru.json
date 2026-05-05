@@ -1,0 +1,13 @@
+{
+	"login.welcome": "Добро пожаловать в wshm",
+	"login.subtitle": "Войдите, чтобы продолжить",
+	"login.username": "Имя пользователя",
+	"login.password": "Пароль",
+	"login.usernamePlaceholder": "admin",
+	"login.submit": "Войти",
+	"login.signingIn": "Вход…",
+	"login.failed": "Ошибка входа",
+	"login.googleButton": "Войти через Google",
+	"login.tagline": "Волшебник, который сортирует ваши pull request'ы",
+	"common.or": "или"
+}

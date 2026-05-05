@@ -52,8 +52,30 @@ pub async fn run(
     let mut repos = std::collections::HashMap::new();
     repos.insert(slug, daemon);
     let multi = Arc::new(super::MultiDaemonState::new(repos));
-    // OSS: no Pro extensions
-    let web = super::web::web_routes_with_extensions(multi, None, None, None, None, None);
+
+    // Open a default UserStore on ~/.wshm/users.db so the OSS single-repo
+    // daemon also has a working RBAC + login flow out of the box. Same logic
+    // as run_multi_with_extensions; kept here too because daemon::run takes
+    // a different code path.
+    let users = match crate::auth::UserStore::open(
+        &dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".wshm")
+            .join("users.db"),
+    ) {
+        Ok(store) => Some(Arc::new(store)),
+        Err(e) => {
+            warn!("Failed to open users db: {e} — login disabled");
+            None
+        }
+    };
+    if let Some(store) = users.as_ref() {
+        if let Err(e) = crate::auth::seed_admin_if_empty(store).await {
+            warn!("Failed to seed admin user: {e}");
+        }
+    }
+    let logs = super::log_buffer::global();
+    let web = super::web::web_routes_with_extensions(multi, users, logs, None, None, None);
 
     let app = webhook_routes.merge(web);
 

@@ -370,14 +370,64 @@ export function setAnthropicToken(token: string, kind: 'oauth' | 'api_key'): Pro
 	return apiPost('/auth/anthropic', { token, kind });
 }
 
+export type Role = 'admin' | 'member' | 'viewer';
+
 export interface Me {
+	id?: number;
 	email: string | null;
 	username: string | null;
+	role?: Role;
 	auth_method: 'sso' | 'local';
 }
 
 export function fetchMe(): Promise<Me> {
 	return apiGet<Me>('/auth/me');
+}
+
+export interface UserRecord {
+	id: number;
+	email: string;
+	username: string | null;
+	role: Role;
+	sso_provider: string | null;
+	created_at: string;
+	last_login_at: string | null;
+}
+
+export interface UsersListResponse {
+	users: UserRecord[];
+}
+
+export function fetchUsers(): Promise<UsersListResponse> {
+	return apiGet<UsersListResponse>('/users');
+}
+
+export async function createUser(payload: {
+	email: string;
+	username?: string;
+	password: string;
+	role: Role;
+}): Promise<{ id: number }> {
+	return apiPost('/users', payload);
+}
+
+export async function updateUser(
+	id: number,
+	payload: { role?: Role; password?: string }
+): Promise<{ status: string }> {
+	const res = await fetch(`/api/v1/users/${id}`, {
+		method: 'PATCH',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(payload)
+	});
+	if (!res.ok) throw new Error(await res.text());
+	return res.json();
+}
+
+export async function deleteUser(id: number): Promise<{ status: string }> {
+	const res = await fetch(`/api/v1/users/${id}`, { method: 'DELETE' });
+	if (!res.ok) throw new Error(await res.text());
+	return res.json();
 }
 
 export interface LogEntry {

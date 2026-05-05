@@ -1,0 +1,13 @@
+{
+	"login.welcome": "Welkom bij wshm",
+	"login.subtitle": "Log in om door te gaan",
+	"login.username": "Gebruikersnaam",
+	"login.password": "Wachtwoord",
+	"login.usernamePlaceholder": "admin",
+	"login.submit": "Inloggen",
+	"login.signingIn": "Inloggen…",
+	"login.failed": "Inloggen mislukt",
+	"login.googleButton": "Inloggen met Google",
+	"login.tagline": "De tovenaar die je pull requests sorteert",
+	"common.or": "of"
+}

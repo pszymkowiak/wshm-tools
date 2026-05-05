@@ -1,0 +1,13 @@
+{
+	"login.welcome": "Benvenuto su wshm",
+	"login.subtitle": "Accedi per continuare",
+	"login.username": "Nome utente",
+	"login.password": "Password",
+	"login.usernamePlaceholder": "admin",
+	"login.submit": "Accedi",
+	"login.signingIn": "Accesso in corso…",
+	"login.failed": "Accesso non riuscito",
+	"login.googleButton": "Accedi con Google",
+	"login.tagline": "Il mago che smista le tue pull request",
+	"common.or": "o"
+}

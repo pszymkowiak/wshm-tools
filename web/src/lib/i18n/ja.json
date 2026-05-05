@@ -1,0 +1,13 @@
+{
+	"login.welcome": "wshm へようこそ",
+	"login.subtitle": "続行するにはサインインしてください",
+	"login.username": "ユーザー名",
+	"login.password": "パスワード",
+	"login.usernamePlaceholder": "admin",
+	"login.submit": "ログイン",
+	"login.signingIn": "ログイン中…",
+	"login.failed": "ログインに失敗しました",
+	"login.googleButton": "Google でログイン",
+	"login.tagline": "プルリクエストを仕分けする魔法使い",
+	"common.or": "または"
+}

@@ -9,7 +9,7 @@ export default defineConfig({
 		// SvelteKit dev server can proxy /api/* and /health without CORS.
 		proxy: {
 			'/api': {
-				target: 'http://127.0.0.1:3002',
+				target: 'http://127.0.0.1:3000',
 				changeOrigin: false,
 				// Inject Basic Auth so we don't have to log in via the browser
 				// every reload. Override via VITE_WSHM_BASIC if needed.
@@ -21,7 +21,7 @@ export default defineConfig({
 					});
 				}
 			},
-			'/health': 'http://127.0.0.1:3002'
+			'/health': 'http://127.0.0.1:3000'
 		}
 	}
 });

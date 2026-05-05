@@ -1,0 +1,13 @@
+{
+	"login.welcome": "欢迎使用 wshm",
+	"login.subtitle": "登录以继续",
+	"login.username": "用户名",
+	"login.password": "密码",
+	"login.usernamePlaceholder": "admin",
+	"login.submit": "登录",
+	"login.signingIn": "登录中…",
+	"login.failed": "登录失败",
+	"login.googleButton": "使用 Google 登录",
+	"login.tagline": "为你整理 pull request 的魔法师",
+	"common.or": "或"
+}

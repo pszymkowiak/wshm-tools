@@ -345,13 +345,29 @@ async fn auth_middleware(
         .unwrap_or("");
     let wants_json = path.starts_with("/api/") || accept.contains("application/json");
 
+    // Detect SPA/browser fetches so we don't trigger the native Basic Auth
+    // dialog. CLI clients (curl) don't send Sec-Fetch-* or Origin and still
+    // get the WWW-Authenticate challenge.
+    let headers = req.headers();
+    let is_browser_fetch = headers.contains_key("sec-fetch-mode")
+        || headers.contains_key("sec-fetch-site")
+        || headers.contains_key("origin");
+
     if wants_json {
-        (
-            StatusCode::UNAUTHORIZED,
-            [(header::WWW_AUTHENTICATE, "Basic realm=\"wshm\"")],
-            Json(json!({"error": "unauthorized"})),
-        )
-            .into_response()
+        if is_browser_fetch {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "unauthorized"})),
+            )
+                .into_response()
+        } else {
+            (
+                StatusCode::UNAUTHORIZED,
+                [(header::WWW_AUTHENTICATE, "Basic realm=\"wshm\"")],
+                Json(json!({"error": "unauthorized"})),
+            )
+                .into_response()
+        }
     } else {
         (
             StatusCode::FOUND,
@@ -1413,6 +1429,72 @@ async fn api_create_backup() -> impl IntoResponse {
     }
 }
 
+/// POST /api/v1/sync/incremental?repo=slug -- run incremental GitHub sync
+/// for a single repo, or all configured repos when `repo` is omitted.
+async fn api_sync_incremental(
+    State(state): State<Arc<WebState>>,
+    Query(filter): Query<RepoFilter>,
+) -> Response {
+    run_sync(&state, filter.repo.as_deref(), false).await
+}
+
+/// POST /api/v1/sync/full?repo=slug -- run full GitHub sync. Same scoping
+/// rule as the incremental variant.
+async fn api_sync_full(
+    State(state): State<Arc<WebState>>,
+    Query(filter): Query<RepoFilter>,
+) -> Response {
+    run_sync(&state, filter.repo.as_deref(), true).await
+}
+
+async fn run_sync(state: &WebState, repo_filter: Option<&str>, full: bool) -> Response {
+    let repos_guard = state.multi.repos.read().await;
+    let targets: Vec<(String, Arc<super::DaemonState>)> = match repo_filter {
+        Some(slug) => repos_guard
+            .get(slug)
+            .map(|d| vec![(slug.to_string(), Arc::clone(d))])
+            .unwrap_or_default(),
+        None => repos_guard
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::clone(v)))
+            .collect(),
+    };
+    drop(repos_guard);
+
+    if targets.is_empty() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "status": "error",
+                "synced": Vec::<String>::new(),
+                "errors": [{"repo": repo_filter.unwrap_or("(all)"), "error": "no matching repo configured"}],
+            })),
+        )
+            .into_response();
+    }
+
+    let mut synced = Vec::new();
+    let mut errors = Vec::new();
+    for (slug, daemon) in targets {
+        let result = if full {
+            crate::github::sync::full_sync(&daemon.gh, &daemon.db).await
+        } else {
+            crate::github::sync::incremental_sync_full(&daemon.gh, &daemon.db).await
+        };
+        match result {
+            Ok(()) => synced.push(slug),
+            Err(e) => errors.push(json!({"repo": slug, "error": format!("{e:#}")})),
+        }
+    }
+
+    Json(json!({
+        "status": if errors.is_empty() { "ok" } else { "partial" },
+        "synced": synced,
+        "errors": errors,
+    }))
+    .into_response()
+}
+
 /// POST /api/v1/restore -- restore from backup.
 async fn api_restore_backup(Json(body): Json<serde_json::Value>) -> impl IntoResponse {
     let path = match body.get("path").and_then(|v| v.as_str()) {
@@ -2157,6 +2239,8 @@ pub fn oss_api_routes() -> Router<Arc<WebState>> {
         .route("/api/v1/backups", get(api_list_backups))
         .route("/api/v1/backup", post(api_create_backup))
         .route("/api/v1/restore", post(api_restore_backup))
+        .route("/api/v1/sync/incremental", post(api_sync_incremental))
+        .route("/api/v1/sync/full", post(api_sync_full))
         .route("/api/v1/license", get(api_license))
         .route("/api/v1/license/activate", post(api_license_activate))
         .route("/api/v1/repos", get(api_list_repos).post(api_add_repo))

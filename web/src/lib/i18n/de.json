@@ -1,0 +1,13 @@
+{
+	"login.welcome": "Willkommen bei wshm",
+	"login.subtitle": "Melde dich an, um fortzufahren",
+	"login.username": "Benutzername",
+	"login.password": "Passwort",
+	"login.usernamePlaceholder": "admin",
+	"login.submit": "Anmelden",
+	"login.signingIn": "Anmeldung…",
+	"login.failed": "Anmeldung fehlgeschlagen",
+	"login.googleButton": "Mit Google anmelden",
+	"login.tagline": "Der Zauberer, der deine Pull Requests sortiert",
+	"common.or": "oder"
+}

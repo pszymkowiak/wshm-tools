@@ -1,0 +1,13 @@
+{
+	"login.welcome": "مرحبًا بك في wshm",
+	"login.subtitle": "سجّل الدخول للمتابعة",
+	"login.username": "اسم المستخدم",
+	"login.password": "كلمة المرور",
+	"login.usernamePlaceholder": "admin",
+	"login.submit": "تسجيل الدخول",
+	"login.signingIn": "جاري تسجيل الدخول…",
+	"login.failed": "فشل تسجيل الدخول",
+	"login.googleButton": "تسجيل الدخول باستخدام Google",
+	"login.tagline": "الساحر الذي يفرز طلبات السحب الخاصة بك",
+	"common.or": "أو"
+}
