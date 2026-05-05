@@ -215,7 +215,7 @@
 	bind:open={issueModalOpen}
 	size="xl"
 	dismissable
-	class="bg-gray-900 border-gray-700"
+	class="!max-w-[80vw] w-[80vw] bg-gray-900 border-gray-700"
 	bodyClass="text-gray-200"
 >
 	{#snippet header()}
@@ -244,7 +244,7 @@
 	bind:open={prModalOpen}
 	size="xl"
 	dismissable
-	class="bg-gray-900 border-gray-700"
+	class="!max-w-[80vw] w-[80vw] bg-gray-900 border-gray-700"
 	bodyClass="text-gray-200"
 >
 	{#snippet header()}
