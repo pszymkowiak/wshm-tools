@@ -288,42 +288,53 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
         .is_ok()
 }
 
-/// First-boot admin seed. If the `users` table is empty, create an admin
-/// row from `WSHM_ADMIN_EMAIL` + `WSHM_ADMIN_PASSWORD` env vars. If only
-/// `WSHM_ADMIN_EMAIL` is set, generate a random password and log it once
-/// to stdout so the operator can capture it from `kubectl logs`.
+/// First-boot admin seed. If the `users` table is empty, create a local
+/// admin account so the operator can log in.
+///
+/// Identifier resolution order:
+/// 1. `WSHM_ADMIN_USER` — preferred, plain username (e.g. "admin").
+/// 2. `WSHM_ADMIN_EMAIL` — legacy, also accepted for backwards compat.
+/// 3. Default to `"admin"` so a fresh install always has a usable account.
+///
+/// Password resolution: `WSHM_ADMIN_PASSWORD` if set, otherwise a random
+/// 24-char password is generated and logged once at WARN level.
 pub async fn seed_admin_if_empty(store: &UserStore) -> Result<()> {
     if store.count().await? > 0 {
         return Ok(());
     }
-    let email = std::env::var("WSHM_ADMIN_EMAIL").ok();
-    let email = match email {
-        Some(e) if !e.trim().is_empty() => e,
-        _ => {
-            tracing::warn!(
-                "users table is empty and WSHM_ADMIN_EMAIL is not set — \
-                 nobody can log in via local accounts. Set the env var or \
-                 sign in via SSO (oauth2-proxy) to bootstrap."
-            );
-            return Ok(());
-        }
+    let identifier = std::env::var("WSHM_ADMIN_USER")
+        .ok()
+        .or_else(|| std::env::var("WSHM_ADMIN_EMAIL").ok())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "admin".to_string());
+    let (password, generated) = match std::env::var("WSHM_ADMIN_PASSWORD") {
+        Ok(p) if !p.is_empty() => (p, false),
+        _ => (generate_password(), true),
     };
-    let password = match std::env::var("WSHM_ADMIN_PASSWORD") {
-        Ok(p) if !p.is_empty() => p,
-        _ => {
-            let p = generate_password();
-            tracing::warn!(
-                target: "wshm_core::auth",
-                "Seeded admin {email} with generated password: {p} \
-                 (rotate via Settings → Users → change password)"
-            );
-            p
-        }
+    // Fall back to the identifier itself for the email column (NOT NULL)
+    // when the operator picked a plain username. find_by_login matches
+    // on either email or username, so the login form still works.
+    let username_opt = if identifier.contains('@') {
+        None
+    } else {
+        Some(identifier.as_str())
     };
     store
-        .create_local(&email, None, &password, Role::Admin)
+        .create_local(&identifier, username_opt, &password, Role::Admin)
         .await?;
-    tracing::info!("Seeded initial admin user: {email}");
+    if generated {
+        tracing::warn!(
+            target: "wshm_core::auth",
+            "===== Seeded initial admin =====\n\
+             user:     {identifier}\n\
+             password: {password}\n\
+             Rotate via Settings → Users (or set WSHM_ADMIN_USER + \
+             WSHM_ADMIN_PASSWORD before first boot to pick your own)."
+        );
+    } else {
+        tracing::info!("Seeded initial admin user: {identifier}");
+    }
     Ok(())
 }
 
