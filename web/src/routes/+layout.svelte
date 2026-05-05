@@ -14,7 +14,6 @@
 		type AuthStatus
 	} from '$lib/api';
 	import {
-		Sidebar,
 		SidebarGroup,
 		SidebarItem,
 		Avatar,
@@ -144,14 +143,9 @@
 	{@render children()}
 {:else}
 <div class="bg-gray-900 text-gray-200 min-h-screen">
-	<Sidebar
-		{activeUrl}
-		alwaysOpen
-		disableBreakpoints
-		ariaLabel="Main navigation"
+	<aside
+		aria-label="Main navigation"
 		class="fixed top-0 left-0 bottom-0 z-40 border-r border-gray-700 bg-gray-800 overflow-y-auto transition-[width] duration-150 flex flex-col"
-		classes={{ div: 'flex flex-col h-full' }}
-		divClass=""
 		style="width: {collapsed ? '52px' : '180px'}"
 	>
 		<div class="flex items-center gap-2 px-3 py-3 border-b border-gray-700">
@@ -194,13 +188,14 @@
 		{/if}
 
 		<div class="flex-1 py-1">
-			<SidebarGroup>
+			<SidebarGroup class="space-y-0">
 				{#each navItems as item}
 					<SidebarItem
 						href={item.href}
-						label={collapsed ? '' : item.label}
+						label={item.label}
+						active={activeUrl === item.href}
 						spanClass={collapsed ? 'sr-only' : 'ms-3 truncate'}
-						class="text-gray-400 hover:bg-gray-700 hover:text-gray-100 {collapsed ? 'justify-center' : ''}"
+						class={collapsed ? 'justify-center' : ''}
 						aClass="flex items-center gap-2.5 px-3 py-2 text-sm rounded-none"
 						activeClass="flex items-center gap-2.5 px-3 py-2 text-sm rounded-none bg-gray-700 text-gray-100"
 						nonActiveClass="flex items-center gap-2.5 px-3 py-2 text-sm rounded-none text-gray-400 hover:bg-gray-700 hover:text-gray-100"
@@ -335,7 +330,7 @@
 				</svg>
 			</Button>
 		</div>
-	</Sidebar>
+	</aside>
 
 	<main class="transition-[margin-left] duration-150 p-3 max-w-none" style="margin-left: {collapsed ? '52px' : '180px'}">
 		{#if authStatus && !authStatus.github && bannerOpen}
