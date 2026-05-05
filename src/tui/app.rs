@@ -881,6 +881,46 @@ impl App {
         }
     }
 
+    /// Run a GitHub sync (incremental or full) for the current repo and
+    /// reload the local DB rows so the new data shows up without a manual
+    /// refresh. Bound to F5 / Shift+F5 in the run loop.
+    pub async fn sync_now(&mut self, config: &Config, db: &Database, full: bool) {
+        self.status_message = Some(if full {
+            "Full sync running…".to_string()
+        } else {
+            "Sync running…".to_string()
+        });
+
+        let gh = match crate::github::Client::new(config) {
+            Ok(c) => c,
+            Err(e) => {
+                self.status_message = Some(format!("Sync failed: {e}"));
+                return;
+            }
+        };
+
+        let result = if full {
+            crate::github::sync::full_sync(&gh, db).await
+        } else {
+            crate::github::sync::incremental_sync_full(&gh, db).await
+        };
+
+        match result {
+            Ok(()) => {
+                self.status_message = Some(if full {
+                    "Full sync complete".to_string()
+                } else {
+                    "Sync complete".to_string()
+                });
+                let _ = self.refresh(db);
+                self.load_summary(config, db);
+            }
+            Err(e) => {
+                self.status_message = Some(format!("Sync failed: {e:#}"));
+            }
+        }
+    }
+
     pub fn start_restore(&mut self) {
         self.input_mode = Some(InputMode::RestorePath);
         self.input_buffer.clear();

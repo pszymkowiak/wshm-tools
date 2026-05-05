@@ -26,7 +26,7 @@ pub async fn run(config: &Config, db: &Database) -> Result<()> {
     let mut last_log_refresh = std::time::Instant::now();
 
     // Main loop
-    let result = run_loop(&mut terminal, &mut app, db, &mut last_log_refresh);
+    let result = run_loop(&mut terminal, &mut app, config, db, &mut last_log_refresh);
 
     // Restore terminal
     disable_raw_mode()?;
@@ -43,6 +43,7 @@ pub async fn run(config: &Config, db: &Database) -> Result<()> {
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut app::App,
+    config: &Config,
     db: &Database,
     last_log_refresh: &mut std::time::Instant,
 ) -> Result<()> {
@@ -184,6 +185,12 @@ fn run_loop(
                         // 'B' — restore: prompt for backup file path
                         KeyCode::Char('B') => {
                             app.start_restore();
+                        }
+                        // F5 — incremental GitHub sync; Shift+F5 — full sync
+                        KeyCode::F(5) => {
+                            let full = key.modifiers.contains(KeyModifiers::SHIFT);
+                            let handle = tokio::runtime::Handle::current();
+                            handle.block_on(app.sync_now(config, db, full));
                         }
                         _ => {}
                     }
