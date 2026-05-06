@@ -69,6 +69,43 @@ struct RepoFilter {
     repo: Option<String>,
 }
 
+/// Combined query string for paginated list endpoints
+/// (`/issues`, `/pulls`, `/triage`, `/queue`, `/activity`).
+///
+/// `limit` is clamped to [1, 500] with a default of 50; `offset` defaults to 0.
+#[derive(Debug, Deserialize)]
+struct ListQuery {
+    repo: Option<String>,
+    #[allow(dead_code)] // accepted for forward-compat; current endpoints only return open items
+    state: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+const PAGE_DEFAULT_LIMIT: usize = 50;
+const PAGE_MAX_LIMIT: usize = 500;
+
+/// Slice the aggregated list into a `{items, total, limit, offset}` page.
+/// `items` should already be sorted in the caller's preferred display order.
+fn paginate<T: serde::Serialize>(
+    items: Vec<T>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> serde_json::Value {
+    let total = items.len();
+    let limit = limit
+        .unwrap_or(PAGE_DEFAULT_LIMIT)
+        .clamp(1, PAGE_MAX_LIMIT);
+    let offset = offset.unwrap_or(0).min(total);
+    let slice: Vec<T> = items.into_iter().skip(offset).take(limit).collect();
+    json!({
+        "items": slice,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Auth middleware
 // ---------------------------------------------------------------------------
@@ -893,15 +930,17 @@ async fn api_status(
 }
 
 /// GET /api/v1/issues -- open issues from DB.
+/// Paginated: returns `{items, total, limit, offset}`. Items are sorted by
+/// `updated_at` desc (newest first), tiebreaker `number` desc.
 async fn api_issues(
     State(state): State<Arc<WebState>>,
-    Query(filter): Query<RepoFilter>,
+    Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
     let mut all_issues = Vec::new();
 
     let __repos_guard = state.multi.repos.read().await;
     for (slug, ds) in __repos_guard.iter() {
-        if let Some(ref f) = filter.repo {
+        if let Some(ref f) = q.repo {
             if f != slug {
                 continue;
             }
@@ -969,19 +1008,31 @@ async fn api_issues(
         }
     }
 
-    Json(all_issues)
+    all_issues.sort_by(|a, b| {
+        let ka = a["updated_at"].as_str().unwrap_or("");
+        let kb = b["updated_at"].as_str().unwrap_or("");
+        kb.cmp(ka).then_with(|| {
+            let na = a["number"].as_u64().unwrap_or(0);
+            let nb = b["number"].as_u64().unwrap_or(0);
+            nb.cmp(&na)
+        })
+    });
+
+    Json(paginate(all_issues, q.limit, q.offset))
 }
 
 /// GET /api/v1/pulls -- open PRs from DB.
+/// Paginated: returns `{items, total, limit, offset}`. Items are sorted by
+/// `updated_at` desc (newest first), tiebreaker `number` desc.
 async fn api_pulls(
     State(state): State<Arc<WebState>>,
-    Query(filter): Query<RepoFilter>,
+    Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
     let mut all_prs = Vec::new();
 
     let __repos_guard = state.multi.repos.read().await;
     for (slug, ds) in __repos_guard.iter() {
-        if let Some(ref f) = filter.repo {
+        if let Some(ref f) = q.repo {
             if f != slug {
                 continue;
             }
@@ -1011,24 +1062,37 @@ async fn api_pulls(
         }
     }
 
-    Json(all_prs)
+    all_prs.sort_by(|a, b| {
+        let ka = a["updated_at"].as_str().unwrap_or("");
+        let kb = b["updated_at"].as_str().unwrap_or("");
+        kb.cmp(ka).then_with(|| {
+            let na = a["number"].as_u64().unwrap_or(0);
+            let nb = b["number"].as_u64().unwrap_or(0);
+            nb.cmp(&na)
+        })
+    });
+
+    Json(paginate(all_prs, q.limit, q.offset))
 }
 
 /// GET /api/v1/triage -- recent triage results.
+/// Paginated: returns `{items, total, limit, offset}` sorted by `acted_at` desc.
 async fn api_triage(
     State(state): State<Arc<WebState>>,
-    Query(filter): Query<RepoFilter>,
+    Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
     let mut all_results = Vec::new();
 
     let __repos_guard = state.multi.repos.read().await;
     for (slug, ds) in __repos_guard.iter() {
-        if let Some(ref f) = filter.repo {
+        if let Some(ref f) = q.repo {
             if f != slug {
                 continue;
             }
         }
-        if let Ok(results) = ds.db.recent_activity(50) {
+        // Pull a generous slice from each repo so cross-repo merge has enough
+        // material; final cut happens after sort + paginate.
+        if let Ok(results) = ds.db.recent_activity(PAGE_MAX_LIMIT) {
             for r in results {
                 all_results.push(json!({
                     "repo": slug,
@@ -1044,19 +1108,26 @@ async fn api_triage(
         }
     }
 
-    Json(all_results)
+    all_results.sort_by(|a, b| {
+        let ka = a["acted_at"].as_str().unwrap_or("");
+        let kb = b["acted_at"].as_str().unwrap_or("");
+        kb.cmp(ka)
+    });
+
+    Json(paginate(all_results, q.limit, q.offset))
 }
 
 /// GET /api/v1/queue -- merge queue: open PRs with basic scoring data.
+/// Paginated: returns `{items, total, limit, offset}` sorted by `score` desc.
 async fn api_queue(
     State(state): State<Arc<WebState>>,
-    Query(filter): Query<RepoFilter>,
+    Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
     let mut queue = Vec::new();
 
     let __repos_guard = state.multi.repos.read().await;
     for (slug, ds) in __repos_guard.iter() {
-        if let Some(ref f) = filter.repo {
+        if let Some(ref f) = q.repo {
             if f != slug {
                 continue;
             }
@@ -1110,33 +1181,39 @@ async fn api_queue(
         }
     }
 
-    // Sort descending by score
+    // Sort descending by score, tiebreaker number desc
     queue.sort_by(|a, b| {
         let sa = a.get("score").and_then(|v| v.as_i64()).unwrap_or(0);
         let sb = b.get("score").and_then(|v| v.as_i64()).unwrap_or(0);
-        sb.cmp(&sa)
+        sb.cmp(&sa).then_with(|| {
+            let na = a["number"].as_u64().unwrap_or(0);
+            let nb = b["number"].as_u64().unwrap_or(0);
+            nb.cmp(&na)
+        })
     });
 
-    Json(queue)
+    Json(paginate(queue, q.limit, q.offset))
 }
 
 /// GET /api/v1/activity -- combined recent triage + PR analysis activity.
+/// Paginated: returns `{items, total, limit, offset}` sorted by `at` desc.
 async fn api_activity(
     State(state): State<Arc<WebState>>,
-    Query(filter): Query<RepoFilter>,
+    Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
     let mut entries: Vec<ActivityEntry> = Vec::new();
 
     let __repos_guard = state.multi.repos.read().await;
     for (slug, ds) in __repos_guard.iter() {
-        if let Some(ref f) = filter.repo {
+        if let Some(ref f) = q.repo {
             if f != slug {
                 continue;
             }
         }
 
-        // Triage activity
-        if let Ok(results) = ds.db.recent_activity(25) {
+        // Pull a generous slice from each repo so cross-repo merge has enough
+        // material; final cut happens after sort + paginate.
+        if let Ok(results) = ds.db.recent_activity(PAGE_MAX_LIMIT) {
             for r in results {
                 entries.push(ActivityEntry {
                     entry_type: "triage".to_string(),
@@ -1170,9 +1247,8 @@ async fn api_activity(
 
     // Sort by timestamp descending
     entries.sort_by(|a, b| b.at.cmp(&a.at));
-    entries.truncate(50);
 
-    Json(entries)
+    Json(paginate(entries, q.limit, q.offset))
 }
 
 // ---------------------------------------------------------------------------

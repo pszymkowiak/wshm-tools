@@ -57,12 +57,12 @@
 			error = null;
 			const [s, i, p] = await Promise.all([
 				fetchStatus(),
-				fetchIssues(),
-				fetchPulls()
+				fetchIssues({ limit: 500 }),
+				fetchPulls({ limit: 500 })
 			]);
 			status = s;
-			issues = i;
-			pulls = p;
+			issues = i.items;
+			pulls = p.items;
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load data';
 		}

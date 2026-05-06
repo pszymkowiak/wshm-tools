@@ -4,10 +4,21 @@
 	import { fetchActivity, fetchIssues, fetchPulls, type ActivityEntry, type Issue, type PullRequest } from '$lib/api';
 	import { multiSort, toggleSort as toggle, sortArrow, sortIndex, sortArrowClass, type SortColumn } from '$lib/sort';
 	import { applyFilters } from '$lib/filter';
-	import { paginate, totalPages, PAGE_SIZE } from '$lib/paginate';
 	import { Table, TableHead, TableHeadCell, TableBody, TableBodyRow, TableBodyCell, Badge, Input, Modal } from 'flowbite-svelte';
 	import IssueDetail from '$lib/components/IssueDetail.svelte';
 	import PrDetail from '$lib/components/PrDetail.svelte';
+	import TablePagination from '$lib/components/TablePagination.svelte';
+
+	const PAGE_KEY = 'wshm.pageSize.activity';
+	function readStoredLimit(): number {
+		try {
+			const raw = localStorage.getItem(PAGE_KEY);
+			const n = raw ? Number(raw) : NaN;
+			return Number.isFinite(n) && n > 0 ? n : 50;
+		} catch {
+			return 50;
+		}
+	}
 
 	let activities: ActivityEntry[] = $state([]);
 	let error: string | null = $state(null);
@@ -37,23 +48,32 @@
 	}));
 
 	let sorted = $derived(multiSort(filtered, sortColumns));
-	let page = $state(0);
-	let pages = $derived(totalPages(sorted.length));
-	let paged = $derived(paginate(sorted, page));
+	let pageLimit = $state(readStoredLimit());
+	let pageOffset = $state(0);
+	let total = $state(0);
 
 	async function load() {
-		page = 0;
 		try {
 			error = null;
-			activities = await fetchActivity();
+			const data = await fetchActivity({ limit: pageLimit, offset: pageOffset });
+			activities = data.items;
+			total = data.total;
+			pageLimit = data.limit;
+			pageOffset = data.offset;
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load activity';
 		}
 	}
 
+	function onPageChange(next: { limit: number; offset: number }) {
+		pageLimit = next.limit;
+		pageOffset = next.offset;
+		load();
+	}
+
 	onMount(() => {
 		load();
-		const unsub = selectedRepo.subscribe(() => { load(); });
+		const unsub = selectedRepo.subscribe(() => { pageOffset = 0; load(); });
 		return unsub;
 	});
 
@@ -79,8 +99,8 @@
 			activePr = null;
 			prModalOpen = true;
 			try {
-				const all = await fetchPulls();
-				activePr = all.find((p) => p.number === num) ?? null;
+				const all = await fetchPulls({ limit: 500 });
+				activePr = all.items.find((p) => p.number === num) ?? null;
 				if (!activePr) detailError = `PR #${num} not found`;
 			} catch (e) {
 				detailError = e instanceof Error ? e.message : 'Failed to load';
@@ -89,8 +109,8 @@
 			activeIssue = null;
 			issueModalOpen = true;
 			try {
-				const all = await fetchIssues();
-				activeIssue = all.find((i) => i.number === num) ?? null;
+				const all = await fetchIssues({ limit: 500 });
+				activeIssue = all.items.find((i) => i.number === num) ?? null;
 				if (!activeIssue) detailError = `Issue #${num} not found`;
 			} catch (e) {
 				detailError = e instanceof Error ? e.message : 'Failed to load';
@@ -137,7 +157,7 @@
 					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.target} placeholder="filter..." size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
 					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.summary} placeholder="filter..." size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
 				</TableBodyRow>
-				{#each paged as entry}
+				{#each sorted as entry}
 					<TableBodyRow class="cursor-pointer" onclick={() => openTarget(entry.target_type, entry.target_number)}>
 						<TableBodyCell class="px-2 py-1.5 text-gray-500 whitespace-nowrap text-sm">{formatTime(entry.created_at)}</TableBodyCell>
 						<TableBodyCell class="px-2 py-1.5">
@@ -212,15 +232,5 @@
 		{/if}
 	</Modal>
 
-	{#if pages > 1}
-		<div class="flex items-center justify-between mt-2 text-sm text-gray-400">
-			<span>{sorted.length} results (page {page + 1}/{pages})</span>
-			<div class="flex gap-1">
-				<button onclick={() => page = 0} disabled={page === 0} class="px-2 py-0.5 rounded border border-gray-600 hover:border-blue-500 disabled:opacity-30 disabled:cursor-default text-xs">|&lt;</button>
-				<button onclick={() => page = Math.max(0, page - 1)} disabled={page === 0} class="px-2 py-0.5 rounded border border-gray-600 hover:border-blue-500 disabled:opacity-30 disabled:cursor-default text-xs">&lt;</button>
-				<button onclick={() => page = Math.min(pages - 1, page + 1)} disabled={page >= pages - 1} class="px-2 py-0.5 rounded border border-gray-600 hover:border-blue-500 disabled:opacity-30 disabled:cursor-default text-xs">&gt;</button>
-				<button onclick={() => page = pages - 1} disabled={page >= pages - 1} class="px-2 py-0.5 rounded border border-gray-600 hover:border-blue-500 disabled:opacity-30 disabled:cursor-default text-xs">&gt;|</button>
-			</div>
-		</div>
-	{/if}
+	<TablePagination {total} limit={pageLimit} offset={pageOffset} storageKey={PAGE_KEY} onChange={onPageChange} />
 {/if}

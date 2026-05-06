@@ -54,8 +54,8 @@
 		issueError = null;
 		issueLoading = true;
 		try {
-			const all = await fetchIssues();
-			activeIssue = all.find((i) => i.number === num) ?? null;
+			const all = await fetchIssues({ limit: 500 });
+			activeIssue = all.items.find((i) => i.number === num) ?? null;
 			if (!activeIssue) issueError = `Issue #${num} not found`;
 		} catch (e) {
 			issueError = e instanceof Error ? e.message : 'Failed to load';
@@ -69,8 +69,8 @@
 		prError = null;
 		prLoading = true;
 		try {
-			const all = await fetchPulls();
-			activePr = all.find((p) => p.number === num) ?? null;
+			const all = await fetchPulls({ limit: 500 });
+			activePr = all.items.find((p) => p.number === num) ?? null;
 			if (!activePr) prError = `PR #${num} not found`;
 		} catch (e) {
 			prError = e instanceof Error ? e.message : 'Failed to load';
