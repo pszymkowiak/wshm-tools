@@ -3,8 +3,11 @@ pub mod events;
 pub mod issues;
 pub mod pulls;
 pub mod schema;
+pub mod search;
 pub mod sync;
 pub mod triage;
+
+pub use search::{sanitize_query, SearchHit};
 
 pub use backend::DatabaseBackend;
 

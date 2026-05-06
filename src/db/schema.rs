@@ -122,6 +122,152 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
         conn.execute_batch("ALTER TABLE pr_analyses ADD COLUMN content_hash TEXT;")?;
     }
 
+    install_search_fts(conn)?;
+
+    Ok(())
+}
+
+/// FTS5 virtual table that backs the cross-entity search endpoint.
+///
+/// One row per searchable artifact (issue, PR, triage result, comment).
+/// We use a single table with a `kind` column rather than per-entity FTS
+/// tables so the search handler can fire one query and merge naturally
+/// by FTS rank instead of stitching N result sets together.
+///
+/// Triggers keep `search_fts` in sync with mutations to `issues`,
+/// `pull_requests`, `triage_results`, and `comments`. On first
+/// migration we backfill existing rows so the index is immediately
+/// useful (no "search returns nothing until next sync" edge case).
+fn install_search_fts(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
+            kind        UNINDEXED,
+            number      UNINDEXED,
+            title,
+            body,
+            extra,
+            updated_at  UNINDEXED,
+            tokenize    = 'porter unicode61 remove_diacritics 1'
+        );
+
+        -- Issues
+        CREATE TRIGGER IF NOT EXISTS search_fts_issues_ai
+        AFTER INSERT ON issues BEGIN
+            INSERT INTO search_fts(kind, number, title, body, extra, updated_at)
+            VALUES('issue', NEW.number, NEW.title, COALESCE(NEW.body, ''),
+                   COALESCE(NEW.labels, ''), NEW.updated_at);
+        END;
+        CREATE TRIGGER IF NOT EXISTS search_fts_issues_au
+        AFTER UPDATE ON issues BEGIN
+            DELETE FROM search_fts WHERE kind = 'issue' AND number = OLD.number;
+            INSERT INTO search_fts(kind, number, title, body, extra, updated_at)
+            VALUES('issue', NEW.number, NEW.title, COALESCE(NEW.body, ''),
+                   COALESCE(NEW.labels, ''), NEW.updated_at);
+        END;
+        CREATE TRIGGER IF NOT EXISTS search_fts_issues_ad
+        AFTER DELETE ON issues BEGIN
+            DELETE FROM search_fts WHERE kind = 'issue' AND number = OLD.number;
+        END;
+
+        -- Pull requests
+        CREATE TRIGGER IF NOT EXISTS search_fts_pulls_ai
+        AFTER INSERT ON pull_requests BEGIN
+            INSERT INTO search_fts(kind, number, title, body, extra, updated_at)
+            VALUES('pull', NEW.number, NEW.title, COALESCE(NEW.body, ''),
+                   COALESCE(NEW.labels, ''), NEW.updated_at);
+        END;
+        CREATE TRIGGER IF NOT EXISTS search_fts_pulls_au
+        AFTER UPDATE ON pull_requests BEGIN
+            DELETE FROM search_fts WHERE kind = 'pull' AND number = OLD.number;
+            INSERT INTO search_fts(kind, number, title, body, extra, updated_at)
+            VALUES('pull', NEW.number, NEW.title, COALESCE(NEW.body, ''),
+                   COALESCE(NEW.labels, ''), NEW.updated_at);
+        END;
+        CREATE TRIGGER IF NOT EXISTS search_fts_pulls_ad
+        AFTER DELETE ON pull_requests BEGIN
+            DELETE FROM search_fts WHERE kind = 'pull' AND number = OLD.number;
+        END;
+
+        -- Triage results
+        CREATE TRIGGER IF NOT EXISTS search_fts_triage_ai
+        AFTER INSERT ON triage_results BEGIN
+            INSERT INTO search_fts(kind, number, title, body, extra, updated_at)
+            VALUES('triage', NEW.issue_number, COALESCE(NEW.summary, ''),
+                   COALESCE(NEW.summary, ''), NEW.category, NEW.acted_at);
+        END;
+        CREATE TRIGGER IF NOT EXISTS search_fts_triage_au
+        AFTER UPDATE ON triage_results BEGIN
+            DELETE FROM search_fts WHERE kind = 'triage' AND number = OLD.issue_number;
+            INSERT INTO search_fts(kind, number, title, body, extra, updated_at)
+            VALUES('triage', NEW.issue_number, COALESCE(NEW.summary, ''),
+                   COALESCE(NEW.summary, ''), NEW.category, NEW.acted_at);
+        END;
+        CREATE TRIGGER IF NOT EXISTS search_fts_triage_ad
+        AFTER DELETE ON triage_results BEGIN
+            DELETE FROM search_fts WHERE kind = 'triage' AND number = OLD.issue_number;
+        END;
+
+        -- Comments — search by issue_number so click-through opens the issue
+        CREATE TRIGGER IF NOT EXISTS search_fts_comments_ai
+        AFTER INSERT ON comments BEGIN
+            INSERT INTO search_fts(kind, number, title, body, extra, updated_at)
+            VALUES('comment', NEW.issue_number, '', NEW.body,
+                   COALESCE(NEW.author, ''), NEW.created_at);
+        END;
+        CREATE TRIGGER IF NOT EXISTS search_fts_comments_au
+        AFTER UPDATE ON comments BEGIN
+            DELETE FROM search_fts WHERE kind = 'comment' AND rowid IN (
+                SELECT rowid FROM search_fts
+                WHERE kind = 'comment' AND number = OLD.issue_number
+            );
+            INSERT INTO search_fts(kind, number, title, body, extra, updated_at)
+            VALUES('comment', NEW.issue_number, '', NEW.body,
+                   COALESCE(NEW.author, ''), NEW.created_at);
+        END;
+        ",
+    )?;
+
+    // First-run backfill. We tag a sentinel row in `sync_log` so the
+    // backfill only happens once even if the FTS table was somehow
+    // truncated (the CREATE VIRTUAL TABLE IF NOT EXISTS above keeps
+    // existing data on subsequent boots).
+    let already_backfilled: bool = conn
+        .query_row(
+            "SELECT 1 FROM sync_log WHERE table_name = '__search_fts_backfilled'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if !already_backfilled {
+        conn.execute_batch(
+            "
+            INSERT INTO search_fts(kind, number, title, body, extra, updated_at)
+            SELECT 'issue', number, title, COALESCE(body, ''),
+                   COALESCE(labels, ''), updated_at
+            FROM issues;
+
+            INSERT INTO search_fts(kind, number, title, body, extra, updated_at)
+            SELECT 'pull', number, title, COALESCE(body, ''),
+                   COALESCE(labels, ''), updated_at
+            FROM pull_requests;
+
+            INSERT INTO search_fts(kind, number, title, body, extra, updated_at)
+            SELECT 'triage', issue_number, COALESCE(summary, ''),
+                   COALESCE(summary, ''), category, acted_at
+            FROM triage_results;
+
+            INSERT INTO search_fts(kind, number, title, body, extra, updated_at)
+            SELECT 'comment', issue_number, '', body,
+                   COALESCE(author, ''), created_at
+            FROM comments;
+
+            INSERT INTO sync_log (table_name, last_synced_at, etag)
+            VALUES ('__search_fts_backfilled', CURRENT_TIMESTAMP, NULL);
+            ",
+        )?;
+    }
+
     Ok(())
 }
 
