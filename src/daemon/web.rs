@@ -1769,11 +1769,13 @@ async fn api_license() -> impl IntoResponse {
             "Daemon webhook mode",
             is_pro && crate::pro_hooks::has_feature("daemon"),
         ),
-        (
-            "search",
-            "Global full-text search",
-            is_pro && crate::pro_hooks::has_feature("search"),
-        ),
+        // Search ships in every Pro Docker image; the route file
+        // doesn't exist in OSS builds, so route-presence is itself the
+        // gate. We only check `is_pro` here so legacy JWTs (issued
+        // before "search" was added to the wshm-api features list) get
+        // the feature too — re-activation just adds the explicit
+        // entry, no behavior change.
+        ("search", "Global full-text search", is_pro),
     ];
 
     let features: Vec<serde_json::Value> = pro_features
