@@ -267,14 +267,14 @@ export function fetchBackups(): Promise<BackupsResult> {
 }
 
 export async function createBackup(): Promise<{ status: string; message: string }> {
-	const res = await fetch(`${BASE}/backup`, { method: 'POST' });
+	const res = await fetch(`${BASE}/backup`, { method: 'POST', headers: CSRF_HEADERS });
 	return res.json();
 }
 
 export async function restoreBackup(filename: string): Promise<{ status: string; message: string }> {
 	const res = await fetch(`${BASE}/restore`, {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
+		headers: { 'Content-Type': 'application/json', ...CSRF_HEADERS },
 		body: JSON.stringify({ path: filename }),
 	});
 	return res.json();
@@ -294,7 +294,7 @@ export async function syncFull(): Promise<SyncResult> {
 	const url = new URL('/api/v1/sync/full', window.location.origin);
 	const repo = get(selectedRepo);
 	if (repo) url.searchParams.set('repo', repo);
-	const res = await fetch(url.toString(), { method: 'POST' });
+	const res = await fetch(url.toString(), { method: 'POST', headers: CSRF_HEADERS });
 	return res.json();
 }
 
@@ -302,7 +302,7 @@ export async function syncIncremental(): Promise<SyncResult> {
 	const url = new URL('/api/v1/sync/incremental', window.location.origin);
 	const repo = get(selectedRepo);
 	if (repo) url.searchParams.set('repo', repo);
-	const res = await fetch(url.toString(), { method: 'POST' });
+	const res = await fetch(url.toString(), { method: 'POST', headers: CSRF_HEADERS });
 	return res.json();
 }
 
@@ -330,7 +330,7 @@ export function fetchLicense(): Promise<LicenseInfo> {
 export async function activateLicense(key: string): Promise<{ status: string; plan?: string; message: string }> {
 	const res = await fetch(`${BASE}/license/activate`, {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
+		headers: { 'Content-Type': 'application/json', ...CSRF_HEADERS },
 		body: JSON.stringify({ license_key: key }),
 	});
 	return res.json();
@@ -355,10 +355,16 @@ export function fetchRepos(): Promise<ReposListResponse> {
 	return apiGet<ReposListResponse>('/repos');
 }
 
+/** CSRF-defeating header injected on every state-changing request.
+ * The daemon rejects POST/PATCH/PUT/DELETE under /api/v1/ that lack
+ * this (or X-Requested-With). Browsers cannot set custom headers
+ * cross-origin without a CORS preflight that we never grant. */
+const CSRF_HEADERS = { 'X-Wshm-Csrf': '1' } as const;
+
 async function apiPost<T>(path: string, body: unknown): Promise<T> {
 	const res = await fetch(`${BASE}${path}`, {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
+		headers: { 'Content-Type': 'application/json', ...CSRF_HEADERS },
 		body: JSON.stringify(body),
 	});
 	const json = await res.json();
@@ -367,6 +373,18 @@ async function apiPost<T>(path: string, body: unknown): Promise<T> {
 		throw new Error(msg);
 	}
 	return json as T;
+}
+
+/** Issue a state-changing fetch with the CSRF header pre-filled. Use
+ * for ad-hoc PATCH/PUT/DELETE/POST that don't go through `apiPost`. */
+export async function apiMutate(
+	path: string,
+	init: RequestInit & { method: 'POST' | 'PATCH' | 'PUT' | 'DELETE' },
+): Promise<Response> {
+	return fetch(`${BASE}${path}`, {
+		...init,
+		headers: { ...(init.headers ?? {}), ...CSRF_HEADERS },
+	});
 }
 
 export function addRepo(slug: string, path?: string): Promise<{ status: string; slug: string; path: string; message: string }> {
@@ -444,7 +462,7 @@ export async function updateRepoFeatures(
 ): Promise<RepoFeatures> {
 	const res = await fetch(`/api/v1/repos/${encodeURIComponent(slug)}/features`, {
 		method: 'PATCH',
-		headers: { 'Content-Type': 'application/json' },
+		headers: { 'Content-Type': 'application/json', ...CSRF_HEADERS },
 		body: JSON.stringify(patch)
 	});
 	if (!res.ok) {
@@ -499,7 +517,7 @@ export async function updateUser(
 ): Promise<{ status: string }> {
 	const res = await fetch(`/api/v1/users/${id}`, {
 		method: 'PATCH',
-		headers: { 'Content-Type': 'application/json' },
+		headers: { 'Content-Type': 'application/json', ...CSRF_HEADERS },
 		body: JSON.stringify(payload)
 	});
 	if (!res.ok) throw new Error(await res.text());
@@ -507,7 +525,7 @@ export async function updateUser(
 }
 
 export async function deleteUser(id: number): Promise<{ status: string }> {
-	const res = await fetch(`/api/v1/users/${id}`, { method: 'DELETE' });
+	const res = await fetch(`/api/v1/users/${id}`, { method: 'DELETE', headers: CSRF_HEADERS });
 	if (!res.ok) throw new Error(await res.text());
 	return res.json();
 }
@@ -562,14 +580,14 @@ export function putSecret(input: {
 }
 
 export async function revealSecret(id: number): Promise<{ value: string }> {
-	const res = await fetch(`${BASE}/secrets/${id}/reveal`, { method: 'POST' });
+	const res = await fetch(`${BASE}/secrets/${id}/reveal`, { method: 'POST', headers: CSRF_HEADERS });
 	const json = await res.json();
 	if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
 	return json;
 }
 
 export async function deleteSecret(id: number): Promise<{ status: string }> {
-	const res = await fetch(`${BASE}/secrets/${id}`, { method: 'DELETE' });
+	const res = await fetch(`${BASE}/secrets/${id}`, { method: 'DELETE', headers: CSRF_HEADERS });
 	const json = await res.json();
 	if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
 	return json;
