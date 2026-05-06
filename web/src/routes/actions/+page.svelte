@@ -1,13 +1,17 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { selectedRepo } from '$lib/stores';
-	import { fetchStatus, fetchIssues, fetchPulls, type Status, type Issue, type PullRequest } from '$lib/api';
-	import { Card, Table, TableHead, TableHeadCell, TableBody, TableBodyRow, TableBodyCell, Badge } from 'flowbite-svelte';
+	import { fetchStatus, fetchIssues, fetchPulls, fetchAuthStatus, type Status, type Issue, type PullRequest, type AuthStatus } from '$lib/api';
+	import { Alert, Card, Table, TableHead, TableHeadCell, TableBody, TableBodyRow, TableBodyCell, Badge } from 'flowbite-svelte';
 
 	let status: Status | null = $state(null);
 	let issues: Issue[] = $state([]);
 	let pulls: PullRequest[] = $state([]);
+	let auth: AuthStatus | null = $state(null);
 	let error: string | null = $state(null);
+
+	let aiMissing = $derived(auth !== null && !auth.anthropic);
+	let ghMissing = $derived(auth !== null && !auth.github);
 
 	const priorityOrder: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -55,14 +59,16 @@
 	async function load() {
 		try {
 			error = null;
-			const [s, i, p] = await Promise.all([
+			const [s, i, p, a] = await Promise.all([
 				fetchStatus(),
 				fetchIssues({ limit: 500 }),
-				fetchPulls({ limit: 500 })
+				fetchPulls({ limit: 500 }),
+				fetchAuthStatus()
 			]);
 			status = s;
 			issues = i.items;
 			pulls = p.items;
+			auth = a;
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load data';
 		}
@@ -96,6 +102,19 @@
 		<p class="text-red-400">{error}</p>
 	</Card>
 {:else}
+	{#if aiMissing || ghMissing}
+		<Alert color="yellow" class="mb-4">
+			<div class="font-semibold mb-1">⚠️ Automatic actions disabled</div>
+			<ul class="text-sm list-disc ml-5 space-y-0.5">
+				{#if ghMissing}
+					<li>No GitHub token configured — wshm cannot read issues/PRs from private repos or post comments. <a href="/settings" class="underline hover:text-yellow-200">Settings → Git providers</a>.</li>
+				{/if}
+				{#if aiMissing}
+					<li>No AI provider configured — issues won't be triaged (no <code>priority</code>) and PRs won't be analyzed (no <code>risk</code>), so the lists below stay empty. <a href="/settings" class="underline hover:text-yellow-200">Settings → AI providers</a>.</li>
+				{/if}
+			</ul>
+		</Alert>
+	{/if}
 	<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
 		<Card class="bg-gray-800 border-gray-700 text-center !p-4 max-w-none">
 			<div class="text-[0.6875rem] uppercase tracking-wider text-gray-500 mb-1">Open Issues</div>
@@ -124,7 +143,14 @@
 		<p class="text-sm text-gray-500 mb-3">High/critical priority issues, oldest first</p>
 		{#if actionRequired.length === 0}
 			<Card class="bg-gray-800 border-gray-700 max-w-none">
-				<p class="text-gray-600 text-center py-4">No high-priority issues requiring action.</p>
+				{#if aiMissing}
+					<p class="text-gray-500 text-center py-4 text-sm">
+						Issues are not triaged because no AI provider is configured.<br />
+						Set one in <a href="/settings" class="text-blue-400 hover:underline">Settings → AI providers</a> to populate this list.
+					</p>
+				{:else}
+					<p class="text-gray-600 text-center py-4">No high-priority issues requiring action.</p>
+				{/if}
 			</Card>
 		{:else}
 			<div class="w-full overflow-x-auto">
