@@ -2107,13 +2107,41 @@ async fn api_secrets_put(
     user: axum::Extension<Option<crate::auth::User>>,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
+    tracing::info!(
+        target: "wshm_core::secrets_trace",
+        "api_secrets_put: ENTERED, body keys = {:?}",
+        body.as_object().map(|o| o.keys().collect::<Vec<_>>())
+    );
     let admin = match require_admin(&user) {
-        Ok(u) => u,
-        Err(e) => return e,
+        Ok(u) => {
+            tracing::info!(
+                target: "wshm_core::secrets_trace",
+                "api_secrets_put: admin check PASSED, user_id={}",
+                u.id
+            );
+            u
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "wshm_core::secrets_trace",
+                "api_secrets_put: admin check FAILED — request rejected"
+            );
+            return e;
+        }
     };
     let store = match state.secrets.as_ref() {
-        Some(s) => s,
+        Some(s) => {
+            tracing::info!(
+                target: "wshm_core::secrets_trace",
+                "api_secrets_put: secret store available"
+            );
+            s
+        }
         None => {
+            tracing::warn!(
+                target: "wshm_core::secrets_trace",
+                "api_secrets_put: NO secret store configured — returning 503"
+            );
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(json!({"error": "secret store not configured"})),
@@ -2121,13 +2149,14 @@ async fn api_secrets_put(
                 .into_response();
         }
     };
-    let scope = match body
-        .get("scope")
-        .and_then(|v| v.as_str())
-        .map(crate::secrets::Scope::from_str)
-    {
-        Some(Ok(s)) => s,
-        _ => {
+    let scope_str = body.get("scope").and_then(|v| v.as_str()).unwrap_or("");
+    let scope = match crate::secrets::Scope::from_str(scope_str) {
+        Ok(s) => s,
+        Err(_) => {
+            tracing::warn!(
+                target: "wshm_core::secrets_trace",
+                "api_secrets_put: invalid scope={scope_str:?} — returning 400"
+            );
             return (
                 StatusCode::BAD_REQUEST,
                 Json(json!({"error": "scope must be 'global' or 'repo'"})),
@@ -2138,7 +2167,16 @@ async fn api_secrets_put(
     let slug = body.get("slug").and_then(|v| v.as_str());
     let key = body.get("key").and_then(|v| v.as_str()).unwrap_or("");
     let value = body.get("value").and_then(|v| v.as_str()).unwrap_or("");
+    tracing::info!(
+        target: "wshm_core::secrets_trace",
+        "api_secrets_put: parsed scope={:?} slug={:?} key={:?} value_len={}",
+        scope, slug, key, value.len()
+    );
     if key.trim().is_empty() || value.is_empty() {
+        tracing::warn!(
+            target: "wshm_core::secrets_trace",
+            "api_secrets_put: validation FAILED — key or value empty"
+        );
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "key and value are required"})),
@@ -2148,6 +2186,10 @@ async fn api_secrets_put(
     if scope == crate::secrets::Scope::Repo
         && slug.map(str::trim).is_none_or(|s| s.is_empty())
     {
+        tracing::warn!(
+            target: "wshm_core::secrets_trace",
+            "api_secrets_put: validation FAILED — Repo scope requires non-empty slug"
+        );
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "slug is required for scope=repo"})),
@@ -2159,25 +2201,50 @@ async fn api_secrets_put(
     } else {
         None
     };
+    tracing::info!(
+        target: "wshm_core::secrets_trace",
+        "api_secrets_put: calling store.put(scope={:?}, slug={:?}, key={:?})",
+        scope, effective_slug, key.trim()
+    );
     match store
         .put(scope, effective_slug, key.trim(), value, Some(admin.id))
         .await
     {
         Ok(id) => {
+            tracing::info!(
+                target: "wshm_core::secrets_trace",
+                "api_secrets_put: store.put OK — row id={id}"
+            );
             // Hot-reload affected daemon clients so the new token / API key
             // takes effect without a restart. Only github_token reloads the
             // GhClient today; other keys are read on-demand by the relevant
             // pipeline so no reload is needed.
             if key.trim() == "github_token" {
+                tracing::info!(
+                    target: "wshm_core::secrets_trace",
+                    "api_secrets_put: key is github_token — triggering reload"
+                );
                 reload_github_clients(&state, scope, effective_slug).await;
+            } else {
+                tracing::info!(
+                    target: "wshm_core::secrets_trace",
+                    "api_secrets_put: key={:?} ≠ github_token — no reload",
+                    key.trim()
+                );
             }
             (StatusCode::CREATED, Json(json!({ "id": id }))).into_response()
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("{e}")})),
-        )
-            .into_response(),
+        Err(e) => {
+            tracing::error!(
+                target: "wshm_core::secrets_trace",
+                "api_secrets_put: store.put FAILED — {e:#}"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("{e}")})),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -2191,6 +2258,11 @@ async fn reload_github_clients(
     slug: Option<&str>,
 ) {
     let repos_guard = state.multi.repos.read().await;
+    tracing::info!(
+        target: "wshm_core::secrets_trace",
+        "reload_github_clients: scope={:?} slug={:?}, iterating {} repos",
+        scope, slug, repos_guard.len()
+    );
     for (repo_slug, ds) in repos_guard.iter() {
         // global secret affects every repo; repo-scoped only affects its owner.
         let matches = match scope {
@@ -2198,8 +2270,16 @@ async fn reload_github_clients(
             crate::secrets::Scope::Repo => slug == Some(repo_slug.as_str()),
         };
         if !matches {
+            tracing::info!(
+                target: "wshm_core::secrets_trace",
+                "reload_github_clients: SKIPPING [{repo_slug}] (slug mismatch)"
+            );
             continue;
         }
+        tracing::info!(
+            target: "wshm_core::secrets_trace",
+            "reload_github_clients: RELOADING [{repo_slug}]"
+        );
         if let Err(e) = ds.reload_github_client() {
             tracing::warn!("[{repo_slug}] reload_github_client failed: {e:#}");
         }
