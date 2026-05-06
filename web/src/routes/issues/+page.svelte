@@ -72,15 +72,23 @@
 	let priorityOptions = $derived(distinctValues(issues, 'priority'));
 	let categoryOptions = $derived(distinctValues(issues, 'category'));
 
+	// Race guard: a fetch in flight from repo A must not overwrite the
+	// list when the user has already switched to repo B. Each load()
+	// claims a monotonic token; results are dropped if a newer load()
+	// has started since.
+	let loadToken = 0;
 	async function load() {
+		const myToken = ++loadToken;
 		try {
 			error = null;
 			const data = await fetchIssues({ limit: pageLimit, offset: pageOffset });
+			if (myToken !== loadToken) return;
 			issues = data.items;
 			total = data.total;
 			pageLimit = data.limit;
 			pageOffset = data.offset;
 		} catch (e) {
+			if (myToken !== loadToken) return;
 			error = e instanceof Error ? e.message : 'Failed to load issues';
 		}
 	}

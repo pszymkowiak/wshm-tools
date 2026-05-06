@@ -51,15 +51,20 @@
 	let pageOffset = $state(0);
 	let total = $state(0);
 
+	// Race guard against repo-switch overwrites. See issues page for context.
+	let loadToken = 0;
 	async function load() {
+		const myToken = ++loadToken;
 		try {
 			error = null;
 			const data = await fetchTriage({ limit: pageLimit, offset: pageOffset });
+			if (myToken !== loadToken) return;
 			results = data.items;
 			total = data.total;
 			pageLimit = data.limit;
 			pageOffset = data.offset;
 		} catch (e) {
+			if (myToken !== loadToken) return;
 			error = e instanceof Error ? e.message : 'Failed to load triage results';
 		}
 	}
