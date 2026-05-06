@@ -3,11 +3,12 @@
 	import { selectedRepo } from '$lib/stores';
 	import { fetchActivity, fetchIssues, fetchPulls, type ActivityEntry, type Issue, type PullRequest } from '$lib/api';
 	import { multiSort, toggleSort as toggle, sortArrow, sortIndex, sortArrowClass, type SortColumn } from '$lib/sort';
-	import { applyFilters } from '$lib/filter';
+	import { applyFilters, distinctValues } from '$lib/filter';
 	import { Table, TableHead, TableHeadCell, TableBody, TableBodyRow, TableBodyCell, Badge, Input, Modal } from 'flowbite-svelte';
 	import IssueDetail from '$lib/components/IssueDetail.svelte';
 	import PrDetail from '$lib/components/PrDetail.svelte';
 	import TablePagination from '$lib/components/TablePagination.svelte';
+	import FilterSelect from '$lib/components/FilterSelect.svelte';
 
 	const PAGE_KEY = 'wshm.pageSize.activity';
 	function readStoredLimit(): number {
@@ -48,6 +49,8 @@
 	}));
 
 	let sorted = $derived(multiSort(filtered, sortColumns));
+
+	let actionOptions = $derived(distinctValues(activities as unknown as Array<{ action?: string }>, 'action'));
 	let pageLimit = $state(readStoredLimit());
 	let pageOffset = $state(0);
 	let total = $state(0);
@@ -153,7 +156,7 @@
 			<TableBody>
 				<TableBodyRow class="border-b border-gray-700">
 					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.created_at} placeholder="filter..." size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
-					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.action} placeholder="filter..." size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
+					<TableBodyCell class="px-2 py-1"><FilterSelect bind:value={filters.action} options={actionOptions} /></TableBodyCell>
 					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.target} placeholder="filter..." size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
 					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.summary} placeholder="filter..." size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
 				</TableBodyRow>

@@ -3,9 +3,10 @@
 	import { selectedRepo } from '$lib/stores';
 	import { fetchTriage, type TriageResult } from '$lib/api';
 	import { multiSort, toggleSort as toggle, sortArrow, sortIndex, sortArrowClass, type SortColumn } from '$lib/sort';
-	import { applyFilters } from '$lib/filter';
+	import { applyFilters, distinctValues } from '$lib/filter';
 	import { Table, TableHead, TableHeadCell, TableBody, TableBodyRow, TableBodyCell, Badge, Input } from 'flowbite-svelte';
 	import TablePagination from '$lib/components/TablePagination.svelte';
+	import FilterSelect from '$lib/components/FilterSelect.svelte';
 
 	const PAGE_KEY = 'wshm.pageSize.triage';
 	function readStoredLimit(): number {
@@ -43,6 +44,9 @@
 	}));
 
 	let sorted = $derived(multiSort(filtered, sortColumns));
+
+	let categoryOptions = $derived(distinctValues(results, 'category'));
+	let priorityOptions = $derived(distinctValues(results, 'priority'));
 	let pageLimit = $state(readStoredLimit());
 	let pageOffset = $state(0);
 	let total = $state(0);
@@ -122,9 +126,9 @@
 			<TableBody>
 				<TableBodyRow class="border-b border-gray-700">
 					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.issue_number} placeholder="#" size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
-					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.category} placeholder="filter..." size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
+					<TableBodyCell class="px-2 py-1"><FilterSelect bind:value={filters.category} options={categoryOptions} /></TableBodyCell>
 					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.confidence} placeholder=">85" size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
-					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.priority} placeholder="filter..." size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
+					<TableBodyCell class="px-2 py-1"><FilterSelect bind:value={filters.priority} options={priorityOptions} /></TableBodyCell>
 					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.acted_at} placeholder="filter..." size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
 				</TableBodyRow>
 				{#each sorted as result}

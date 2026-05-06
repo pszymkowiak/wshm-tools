@@ -3,11 +3,12 @@
 	import { selectedRepo } from '$lib/stores';
 	import { fetchIssues, type Issue } from '$lib/api';
 	import { multiSort, toggleSort as toggle, sortArrow, sortIndex, sortArrowClass, type SortColumn } from '$lib/sort';
-	import { applyFilters } from '$lib/filter';
+	import { applyFilters, distinctValues } from '$lib/filter';
 	import { Card, Table, TableHead, TableHeadCell, TableBody, TableBodyRow, TableBodyCell, Badge, Input, Modal } from 'flowbite-svelte';
 	import { colorConfig, prStatusBorder, priorityColor, categoryColor, type ColorConfig } from '$lib/colors';
 	import IssueDetail from '$lib/components/IssueDetail.svelte';
 	import TablePagination from '$lib/components/TablePagination.svelte';
+	import FilterSelect from '$lib/components/FilterSelect.svelte';
 
 	const PAGE_KEY = 'wshm.pageSize.issues';
 	function readStoredLimit(): number {
@@ -66,6 +67,10 @@
 	}));
 
 	let sorted = $derived(multiSort(filtered, sortColumns));
+
+	let prStatusOptions = $derived(distinctValues(issues, 'pr_status'));
+	let priorityOptions = $derived(distinctValues(issues, 'priority'));
+	let categoryOptions = $derived(distinctValues(issues, 'category'));
 
 	async function load() {
 		try {
@@ -142,10 +147,10 @@
 				<TableBodyRow class="border-b border-gray-700">
 					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.number} placeholder="#" size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
 					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.title} placeholder="filter..." size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
-					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.pr_status} placeholder="no/open/ready" size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
+					<TableBodyCell class="px-2 py-1"><FilterSelect bind:value={filters.pr_status} options={prStatusOptions} /></TableBodyCell>
 					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.labels} placeholder="filter..." size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
-					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.priority} placeholder="filter..." size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
-					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.category} placeholder="filter..." size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
+					<TableBodyCell class="px-2 py-1"><FilterSelect bind:value={filters.priority} options={priorityOptions} /></TableBodyCell>
+					<TableBodyCell class="px-2 py-1"><FilterSelect bind:value={filters.category} options={categoryOptions} /></TableBodyCell>
 					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.age} placeholder=">N" size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
 				</TableBodyRow>
 				{#each sorted as issue}
