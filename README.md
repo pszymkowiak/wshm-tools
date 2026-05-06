@@ -132,6 +132,7 @@ One static binary. No SaaS dependency. Runs where your code lives.
 |----------------|------------------------------------------------------------------|
 | **VM / VPS**   | systemd service, auto-update via Homebrew, any Linux             |
 | **Docker**     | `docker run innovtech/wshm:latest` — multi-arch (amd64 + arm64)  |
+| **Compose**    | `cp .env.example .env && docker compose up -d` — dashboard on `:3000` |
 | **Kubernetes** | Helm chart, Kustomize overlays, or raw `Job`/`CronJob` manifests under [`deploy/`](./deploy) |
 | **Local dev**  | `wshm tui` / `wshm triage` — works offline with Ollama           |
 

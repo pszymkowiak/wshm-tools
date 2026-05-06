@@ -13,6 +13,9 @@ web/build/
 .wshm/
 *.log
 
+# Local docker-compose secrets
+.env
+
 # OS
 .DS_Store
 *.swp

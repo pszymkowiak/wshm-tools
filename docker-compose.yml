@@ -1,0 +1,46 @@
+# wshm — self-hosted GitHub agent
+#
+# Quick start:
+#   1. cp .env.example .env       and fill in your tokens
+#   2. docker compose up -d
+#   3. Open http://localhost:3000
+#
+# Defaults are deliberately safe:
+#   - polling mode (no public IP / webhook needed)
+#   - no --apply (dry-run; wshm observes but does not post comments,
+#     labels, or merges). Add --apply to the command list once you've
+#     reviewed the dashboard and trust the pipelines.
+#
+# Data lives in the wshm-data volume (SQLite DB, credentials, config).
+# Snapshot it with `docker compose cp wshm:/home/wshm/.wshm ./backup`.
+
+services:
+  wshm:
+    image: innovtech/wshm:latest
+    container_name: wshm
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - wshm-data:/home/wshm/.wshm
+    environment:
+      # GitHub PAT with `repo` scope — required.
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      # One of the two — needed for triage and PR analysis.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_OAUTH_TOKEN: ${ANTHROPIC_OAUTH_TOKEN:-}
+      # Optional: 32-byte hex key to enable the encrypted secret store
+      # (otherwise tokens stay in ~/.wshm/credentials in plaintext).
+      # Generate with: openssl rand -hex 32
+      WSHM_MASTER_KEY: ${WSHM_MASTER_KEY:-}
+      RUST_LOG: ${RUST_LOG:-info,wshm_core=info}
+    command:
+      - daemon
+      - --bind=0.0.0.0:3000
+      - --poll
+      - --poll-interval=60
+      # Uncomment to let wshm post comments, set labels, merge PRs, …
+      # - --apply
+
+volumes:
+  wshm-data:
