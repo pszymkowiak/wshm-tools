@@ -40,12 +40,18 @@
 	let pages = $derived(totalPages(sorted.length));
 	let paged = $derived(paginate(sorted, page));
 
+	// Race guard against repo-switch overwrites. See issues page for context.
+	let loadToken = 0;
 	async function load() {
+		const myToken = ++loadToken;
 		page = 0;
 		try {
 			error = null;
-			entries = await fetchQueue();
+			const result = await fetchQueue();
+			if (myToken !== loadToken) return;
+			entries = result;
 		} catch (e) {
+			if (myToken !== loadToken) return;
 			error = e instanceof Error ? e.message : 'Failed to load merge queue';
 		}
 	}

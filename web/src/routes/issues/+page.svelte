@@ -56,11 +56,20 @@
 	let pages = $derived(totalPages(sorted.length));
 	let paged = $derived(paginate(sorted, page));
 
+	// Race guard: when the user switches repo while a fetch is in flight,
+	// the slower response from the old repo could otherwise overwrite the
+	// newer one. Each `load()` claims a monotonic token; results are
+	// dropped if a newer load() has started since.
+	let loadToken = 0;
 	async function load() {
+		const myToken = ++loadToken;
 		try {
 			error = null;
-			issues = await fetchIssues();
+			const result = await fetchIssues();
+			if (myToken !== loadToken) return;
+			issues = result;
 		} catch (e) {
+			if (myToken !== loadToken) return;
 			error = e instanceof Error ? e.message : 'Failed to load issues';
 		}
 	}

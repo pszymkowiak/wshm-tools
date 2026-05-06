@@ -41,12 +41,18 @@
 	let pages = $derived(totalPages(sorted.length));
 	let paged = $derived(paginate(sorted, page));
 
+	// Race guard against repo-switch overwrites. See issues page for context.
+	let loadToken = 0;
 	async function load() {
+		const myToken = ++loadToken;
 		page = 0;
 		try {
 			error = null;
-			activities = await fetchActivity();
+			const result = await fetchActivity();
+			if (myToken !== loadToken) return;
+			activities = result;
 		} catch (e) {
+			if (myToken !== loadToken) return;
 			error = e instanceof Error ? e.message : 'Failed to load activity';
 		}
 	}
