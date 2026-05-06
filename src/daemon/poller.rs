@@ -98,9 +98,9 @@ async fn poll_events(
         state.config.repo_owner, state.config.repo_name
     );
 
-    let response = state.gh.octocrab._get(&url).await?;
+    let response = state.gh().octocrab._get(&url).await?;
 
-    let body = state.gh.octocrab.body_to_string(response).await?;
+    let body = state.gh().octocrab.body_to_string(response).await?;
     let events = crate::github::parse_json_array(&body, "events")?;
 
     if events.is_empty() {

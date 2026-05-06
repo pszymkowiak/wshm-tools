@@ -1510,9 +1510,9 @@ async fn run_sync(state: &WebState, repo_filter: Option<&str>, full: bool) -> Re
     let mut errors = Vec::new();
     for (slug, daemon) in targets {
         let result = if full {
-            crate::github::sync::full_sync(&daemon.gh, &daemon.db).await
+            crate::github::sync::full_sync(&daemon.gh(), &daemon.db).await
         } else {
-            crate::github::sync::incremental_sync_full(&daemon.gh, &daemon.db).await
+            crate::github::sync::incremental_sync_full(&daemon.gh(), &daemon.db).await
         };
         match result {
             Ok(()) => synced.push(slug),
@@ -2163,12 +2163,46 @@ async fn api_secrets_put(
         .put(scope, effective_slug, key.trim(), value, Some(admin.id))
         .await
     {
-        Ok(id) => (StatusCode::CREATED, Json(json!({ "id": id }))).into_response(),
+        Ok(id) => {
+            // Hot-reload affected daemon clients so the new token / API key
+            // takes effect without a restart. Only github_token reloads the
+            // GhClient today; other keys are read on-demand by the relevant
+            // pipeline so no reload is needed.
+            if key.trim() == "github_token" {
+                reload_github_clients(&state, scope, effective_slug).await;
+            }
+            (StatusCode::CREATED, Json(json!({ "id": id }))).into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("{e}")})),
         )
             .into_response(),
+    }
+}
+
+/// Rebuild the GitHub client of every running per-repo daemon whose scope
+/// matches the secret that was just written or removed. Errors are logged
+/// but never propagate — a failed reload doesn't mean the secret write
+/// itself failed.
+async fn reload_github_clients(
+    state: &WebState,
+    scope: crate::secrets::Scope,
+    slug: Option<&str>,
+) {
+    let repos_guard = state.multi.repos.read().await;
+    for (repo_slug, ds) in repos_guard.iter() {
+        // global secret affects every repo; repo-scoped only affects its owner.
+        let matches = match scope {
+            crate::secrets::Scope::Global => true,
+            crate::secrets::Scope::Repo => slug == Some(repo_slug.as_str()),
+        };
+        if !matches {
+            continue;
+        }
+        if let Err(e) = ds.reload_github_client() {
+            tracing::warn!("[{repo_slug}] reload_github_client failed: {e:#}");
+        }
     }
 }
 
@@ -2228,7 +2262,13 @@ async fn api_secrets_delete(
         }
     };
     match store.delete(id, Some(admin.id)).await {
-        Ok(true) => Json(json!({"status": "ok"})).into_response(),
+        Ok(true) => {
+            // Blanket-reload — we don't know if the deleted secret was a
+            // github_token without looking it up first. Rebuilding a few
+            // GhClients is cheap; deletes are rare admin actions.
+            reload_github_clients(&state, crate::secrets::Scope::Global, None).await;
+            Json(json!({"status": "ok"})).into_response()
+        }
         Ok(false) => (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
