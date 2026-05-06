@@ -162,24 +162,44 @@ export function fetchSummary(): Promise<Summary> {
 	return apiGet<Summary>('/summary');
 }
 
-export function fetchIssues(state: string = 'open'): Promise<Issue[]> {
-	return apiGet<Issue[]>('/issues', { state });
+/** Standard envelope for paginated list endpoints. */
+export interface Page<T> {
+	items: T[];
+	total: number;
+	limit: number;
+	offset: number;
 }
 
-export function fetchPulls(state: string = 'open'): Promise<PullRequest[]> {
-	return apiGet<PullRequest[]>('/pulls', { state });
+export interface PageOpts {
+	limit?: number;
+	offset?: number;
 }
 
-export function fetchTriage(): Promise<TriageResult[]> {
-	return apiGet<TriageResult[]>('/triage');
+function pageParams(opts?: PageOpts): Record<string, string | number> {
+	const p: Record<string, string | number> = {};
+	if (opts?.limit !== undefined) p.limit = opts.limit;
+	if (opts?.offset !== undefined) p.offset = opts.offset;
+	return p;
 }
 
-export function fetchQueue(): Promise<QueueEntry[]> {
-	return apiGet<QueueEntry[]>('/queue');
+export function fetchIssues(opts?: PageOpts & { state?: string }): Promise<Page<Issue>> {
+	return apiGet<Page<Issue>>('/issues', { state: opts?.state ?? 'open', ...pageParams(opts) });
 }
 
-export function fetchActivity(): Promise<ActivityEntry[]> {
-	return apiGet<ActivityEntry[]>('/activity');
+export function fetchPulls(opts?: PageOpts & { state?: string }): Promise<Page<PullRequest>> {
+	return apiGet<Page<PullRequest>>('/pulls', { state: opts?.state ?? 'open', ...pageParams(opts) });
+}
+
+export function fetchTriage(opts?: PageOpts): Promise<Page<TriageResult>> {
+	return apiGet<Page<TriageResult>>('/triage', pageParams(opts));
+}
+
+export function fetchQueue(opts?: PageOpts): Promise<Page<QueueEntry>> {
+	return apiGet<Page<QueueEntry>>('/queue', pageParams(opts));
+}
+
+export function fetchActivity(opts?: PageOpts): Promise<Page<ActivityEntry>> {
+	return apiGet<Page<ActivityEntry>>('/activity', pageParams(opts));
 }
 
 // ---------------------------------------------------------------------------

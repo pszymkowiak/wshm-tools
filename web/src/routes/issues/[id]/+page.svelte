@@ -11,8 +11,8 @@
 
 	onMount(async () => {
 		try {
-			const all = await fetchIssues();
-			issue = all.find(i => i.number === id) ?? null;
+			const all = await fetchIssues({ limit: 500 });
+			issue = all.items.find(i => i.number === id) ?? null;
 			if (!issue) error = `Issue #${id} not found`;
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load';

@@ -25,6 +25,23 @@ export function matchesFilter(value: unknown, filter: string): boolean {
 	return strVal.toLowerCase().includes(f.toLowerCase());
 }
 
+/**
+ * Compute the sorted distinct values of a field across `items`. Used to
+ * populate `<FilterSelect>` dropdowns from real data — never hardcode
+ * enum lists in components, since priority / category / risk are
+ * produced by the AI provider and may evolve over time.
+ */
+export function distinctValues<T>(items: T[], key: keyof T): string[] {
+	const set = new Set<string>();
+	for (const item of items) {
+		const v = item[key] as unknown;
+		if (v === null || v === undefined) continue;
+		const s = String(v).trim();
+		if (s !== '') set.add(s);
+	}
+	return [...set].sort();
+}
+
 export function applyFilters<T>(data: T[], filters: Record<string, string>): T[] {
 	const activeFilters = Object.entries(filters).filter(([, v]) => v.trim() !== '');
 	if (activeFilters.length === 0) return data;

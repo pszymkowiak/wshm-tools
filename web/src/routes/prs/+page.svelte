@@ -3,10 +3,22 @@
 	import { selectedRepo } from '$lib/stores';
 	import { fetchPulls, type PullRequest } from '$lib/api';
 	import { multiSort, toggleSort as toggle, sortArrow, sortIndex, sortArrowClass, type SortColumn } from '$lib/sort';
-	import { applyFilters } from '$lib/filter';
-	import { paginate, totalPages, PAGE_SIZE } from '$lib/paginate';
+	import { applyFilters, distinctValues } from '$lib/filter';
 	import { Table, TableHead, TableHeadCell, TableBody, TableBodyRow, TableBodyCell, Badge, Input, Modal } from 'flowbite-svelte';
 	import PrDetail from '$lib/components/PrDetail.svelte';
+	import TablePagination from '$lib/components/TablePagination.svelte';
+	import FilterSelect from '$lib/components/FilterSelect.svelte';
+
+	const PAGE_KEY = 'wshm.pageSize.pulls';
+	function readStoredLimit(): number {
+		try {
+			const raw = localStorage.getItem(PAGE_KEY);
+			const n = raw ? Number(raw) : NaN;
+			return Number.isFinite(n) && n > 0 ? n : 50;
+		} catch {
+			return 50;
+		}
+	}
 
 	let pulls: PullRequest[] = $state([]);
 	let error: string | null = $state(null);
@@ -48,23 +60,37 @@
 	}));
 
 	let sorted = $derived(multiSort(filtered, sortColumns));
-	let page = $state(0);
-	let pages = $derived(totalPages(sorted.length));
-	let paged = $derived(paginate(sorted, page));
+
+	let stateOptions = $derived(distinctValues(enriched, 'state'));
+	let riskOptions = $derived(distinctValues(enriched, 'risk'));
+	let ciOptions = $derived(distinctValues(enriched, 'ci_status'));
+	let conflictsOptions = $derived(distinctValues(enriched, 'conflicts'));
+	let pageLimit = $state(readStoredLimit());
+	let pageOffset = $state(0);
+	let total = $state(0);
 
 	async function load() {
-		page = 0;
 		try {
 			error = null;
-			pulls = await fetchPulls();
+			const data = await fetchPulls({ limit: pageLimit, offset: pageOffset });
+			pulls = data.items;
+			total = data.total;
+			pageLimit = data.limit;
+			pageOffset = data.offset;
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load pull requests';
 		}
 	}
 
+	function onPageChange(next: { limit: number; offset: number }) {
+		pageLimit = next.limit;
+		pageOffset = next.offset;
+		load();
+	}
+
 	onMount(() => {
 		load();
-		const unsub = selectedRepo.subscribe(() => { load(); });
+		const unsub = selectedRepo.subscribe(() => { pageOffset = 0; load(); });
 		return unsub;
 	});
 
@@ -137,14 +163,14 @@
 				<TableBodyRow class="border-b border-gray-700">
 					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.number} placeholder="#" size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
 					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.title} placeholder="filter..." size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
-					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.state} placeholder="filter..." size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
+					<TableBodyCell class="px-2 py-1"><FilterSelect bind:value={filters.state} options={stateOptions} /></TableBodyCell>
 					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.base_ref} placeholder="main..." size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
-					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.risk} placeholder="filter..." size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
-					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.ci_status} placeholder="filter..." size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
-					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.conflicts} placeholder="filter..." size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
+					<TableBodyCell class="px-2 py-1"><FilterSelect bind:value={filters.risk} options={riskOptions} /></TableBodyCell>
+					<TableBodyCell class="px-2 py-1"><FilterSelect bind:value={filters.ci_status} options={ciOptions} /></TableBodyCell>
+					<TableBodyCell class="px-2 py-1"><FilterSelect bind:value={filters.conflicts} options={conflictsOptions} /></TableBodyCell>
 					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.age} placeholder=">N" size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
 				</TableBodyRow>
-				{#each paged as pr}
+				{#each sorted as pr}
 					<TableBodyRow class="cursor-pointer" onclick={() => openPr(pr)}>
 						<TableBodyCell class="px-2 py-1.5 mono">{pr.number}</TableBodyCell>
 						<TableBodyCell class="px-2 py-1.5 truncate">{pr.title}</TableBodyCell>
@@ -206,15 +232,5 @@
 		{/if}
 	</Modal>
 
-	{#if pages > 1}
-		<div class="flex items-center justify-between mt-2 text-sm text-gray-400">
-			<span>{sorted.length} results (page {page + 1}/{pages})</span>
-			<div class="flex gap-1">
-				<button onclick={() => page = 0} disabled={page === 0} class="px-2 py-0.5 rounded border border-gray-600 hover:border-blue-500 disabled:opacity-30 disabled:cursor-default text-xs">|&lt;</button>
-				<button onclick={() => page = Math.max(0, page - 1)} disabled={page === 0} class="px-2 py-0.5 rounded border border-gray-600 hover:border-blue-500 disabled:opacity-30 disabled:cursor-default text-xs">&lt;</button>
-				<button onclick={() => page = Math.min(pages - 1, page + 1)} disabled={page >= pages - 1} class="px-2 py-0.5 rounded border border-gray-600 hover:border-blue-500 disabled:opacity-30 disabled:cursor-default text-xs">&gt;</button>
-				<button onclick={() => page = pages - 1} disabled={page >= pages - 1} class="px-2 py-0.5 rounded border border-gray-600 hover:border-blue-500 disabled:opacity-30 disabled:cursor-default text-xs">&gt;|</button>
-			</div>
-		</div>
-	{/if}
+	<TablePagination {total} limit={pageLimit} offset={pageOffset} storageKey={PAGE_KEY} onChange={onPageChange} />
 {/if}
