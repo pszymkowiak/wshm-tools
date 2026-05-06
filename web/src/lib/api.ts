@@ -162,24 +162,44 @@ export function fetchSummary(): Promise<Summary> {
 	return apiGet<Summary>('/summary');
 }
 
-export function fetchIssues(state: string = 'open'): Promise<Issue[]> {
-	return apiGet<Issue[]>('/issues', { state });
+/** Standard envelope for paginated list endpoints. */
+export interface Page<T> {
+	items: T[];
+	total: number;
+	limit: number;
+	offset: number;
 }
 
-export function fetchPulls(state: string = 'open'): Promise<PullRequest[]> {
-	return apiGet<PullRequest[]>('/pulls', { state });
+export interface PageOpts {
+	limit?: number;
+	offset?: number;
 }
 
-export function fetchTriage(): Promise<TriageResult[]> {
-	return apiGet<TriageResult[]>('/triage');
+function pageParams(opts?: PageOpts): Record<string, string | number> {
+	const p: Record<string, string | number> = {};
+	if (opts?.limit !== undefined) p.limit = opts.limit;
+	if (opts?.offset !== undefined) p.offset = opts.offset;
+	return p;
 }
 
-export function fetchQueue(): Promise<QueueEntry[]> {
-	return apiGet<QueueEntry[]>('/queue');
+export function fetchIssues(opts?: PageOpts & { state?: string }): Promise<Page<Issue>> {
+	return apiGet<Page<Issue>>('/issues', { state: opts?.state ?? 'open', ...pageParams(opts) });
 }
 
-export function fetchActivity(): Promise<ActivityEntry[]> {
-	return apiGet<ActivityEntry[]>('/activity');
+export function fetchPulls(opts?: PageOpts & { state?: string }): Promise<Page<PullRequest>> {
+	return apiGet<Page<PullRequest>>('/pulls', { state: opts?.state ?? 'open', ...pageParams(opts) });
+}
+
+export function fetchTriage(opts?: PageOpts): Promise<Page<TriageResult>> {
+	return apiGet<Page<TriageResult>>('/triage', pageParams(opts));
+}
+
+export function fetchQueue(opts?: PageOpts): Promise<Page<QueueEntry>> {
+	return apiGet<Page<QueueEntry>>('/queue', pageParams(opts));
+}
+
+export function fetchActivity(opts?: PageOpts): Promise<Page<ActivityEntry>> {
+	return apiGet<Page<ActivityEntry>>('/activity', pageParams(opts));
 }
 
 // ---------------------------------------------------------------------------
@@ -247,14 +267,14 @@ export function fetchBackups(): Promise<BackupsResult> {
 }
 
 export async function createBackup(): Promise<{ status: string; message: string }> {
-	const res = await fetch(`${BASE}/backup`, { method: 'POST' });
+	const res = await fetch(`${BASE}/backup`, { method: 'POST', headers: CSRF_HEADERS });
 	return res.json();
 }
 
 export async function restoreBackup(filename: string): Promise<{ status: string; message: string }> {
 	const res = await fetch(`${BASE}/restore`, {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
+		headers: { 'Content-Type': 'application/json', ...CSRF_HEADERS },
 		body: JSON.stringify({ path: filename }),
 	});
 	return res.json();
@@ -274,7 +294,7 @@ export async function syncFull(): Promise<SyncResult> {
 	const url = new URL('/api/v1/sync/full', window.location.origin);
 	const repo = get(selectedRepo);
 	if (repo) url.searchParams.set('repo', repo);
-	const res = await fetch(url.toString(), { method: 'POST' });
+	const res = await fetch(url.toString(), { method: 'POST', headers: CSRF_HEADERS });
 	return res.json();
 }
 
@@ -282,7 +302,7 @@ export async function syncIncremental(): Promise<SyncResult> {
 	const url = new URL('/api/v1/sync/incremental', window.location.origin);
 	const repo = get(selectedRepo);
 	if (repo) url.searchParams.set('repo', repo);
-	const res = await fetch(url.toString(), { method: 'POST' });
+	const res = await fetch(url.toString(), { method: 'POST', headers: CSRF_HEADERS });
 	return res.json();
 }
 
@@ -310,7 +330,7 @@ export function fetchLicense(): Promise<LicenseInfo> {
 export async function activateLicense(key: string): Promise<{ status: string; plan?: string; message: string }> {
 	const res = await fetch(`${BASE}/license/activate`, {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
+		headers: { 'Content-Type': 'application/json', ...CSRF_HEADERS },
 		body: JSON.stringify({ license_key: key }),
 	});
 	return res.json();
@@ -335,10 +355,16 @@ export function fetchRepos(): Promise<ReposListResponse> {
 	return apiGet<ReposListResponse>('/repos');
 }
 
+/** CSRF-defeating header injected on every state-changing request.
+ * The daemon rejects POST/PATCH/PUT/DELETE under /api/v1/ that lack
+ * this (or X-Requested-With). Browsers cannot set custom headers
+ * cross-origin without a CORS preflight that we never grant. */
+const CSRF_HEADERS = { 'X-Wshm-Csrf': '1' } as const;
+
 async function apiPost<T>(path: string, body: unknown): Promise<T> {
 	const res = await fetch(`${BASE}${path}`, {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
+		headers: { 'Content-Type': 'application/json', ...CSRF_HEADERS },
 		body: JSON.stringify(body),
 	});
 	const json = await res.json();
@@ -347,6 +373,18 @@ async function apiPost<T>(path: string, body: unknown): Promise<T> {
 		throw new Error(msg);
 	}
 	return json as T;
+}
+
+/** Issue a state-changing fetch with the CSRF header pre-filled. Use
+ * for ad-hoc PATCH/PUT/DELETE/POST that don't go through `apiPost`. */
+export async function apiMutate(
+	path: string,
+	init: RequestInit & { method: 'POST' | 'PATCH' | 'PUT' | 'DELETE' },
+): Promise<Response> {
+	return fetch(`${BASE}${path}`, {
+		...init,
+		headers: { ...(init.headers ?? {}), ...CSRF_HEADERS },
+	});
 }
 
 export function addRepo(slug: string, path?: string): Promise<{ status: string; slug: string; path: string; message: string }> {
@@ -362,12 +400,26 @@ export function fetchAuthStatus(): Promise<AuthStatus> {
 	return apiGet<AuthStatus>('/auth/status');
 }
 
-export function setGithubToken(token: string): Promise<{ status: string; message: string }> {
+export function setGithubToken(token: string): Promise<{ status: string; message: string; backend?: string }> {
 	return apiPost('/auth/github', { token });
 }
 
-export function setAnthropicToken(token: string, kind: 'oauth' | 'api_key'): Promise<{ status: string; message: string }> {
+export function setAnthropicToken(token: string, kind: 'oauth' | 'api_key'): Promise<{ status: string; message: string; backend?: string }> {
 	return apiPost('/auth/anthropic', { token, kind });
+}
+
+export async function removeGithubToken(): Promise<{ status: string; removed: boolean; message: string }> {
+	const res = await fetch(`${BASE}/auth/github`, { method: 'DELETE' });
+	const json = await res.json();
+	if (!res.ok) throw new Error((json && (json.error || json.message)) || `HTTP ${res.status}`);
+	return json;
+}
+
+export async function removeAnthropicToken(): Promise<{ status: string; removed: boolean; message: string }> {
+	const res = await fetch(`${BASE}/auth/anthropic`, { method: 'DELETE' });
+	const json = await res.json();
+	if (!res.ok) throw new Error((json && (json.error || json.message)) || `HTTP ${res.status}`);
+	return json;
 }
 
 export type Role = 'admin' | 'operator' | 'member' | 'viewer';
@@ -410,7 +462,7 @@ export async function updateRepoFeatures(
 ): Promise<RepoFeatures> {
 	const res = await fetch(`/api/v1/repos/${encodeURIComponent(slug)}/features`, {
 		method: 'PATCH',
-		headers: { 'Content-Type': 'application/json' },
+		headers: { 'Content-Type': 'application/json', ...CSRF_HEADERS },
 		body: JSON.stringify(patch)
 	});
 	if (!res.ok) {
@@ -465,7 +517,7 @@ export async function updateUser(
 ): Promise<{ status: string }> {
 	const res = await fetch(`/api/v1/users/${id}`, {
 		method: 'PATCH',
-		headers: { 'Content-Type': 'application/json' },
+		headers: { 'Content-Type': 'application/json', ...CSRF_HEADERS },
 		body: JSON.stringify(payload)
 	});
 	if (!res.ok) throw new Error(await res.text());
@@ -473,7 +525,7 @@ export async function updateUser(
 }
 
 export async function deleteUser(id: number): Promise<{ status: string }> {
-	const res = await fetch(`/api/v1/users/${id}`, { method: 'DELETE' });
+	const res = await fetch(`/api/v1/users/${id}`, { method: 'DELETE', headers: CSRF_HEADERS });
 	if (!res.ok) throw new Error(await res.text());
 	return res.json();
 }
@@ -528,14 +580,14 @@ export function putSecret(input: {
 }
 
 export async function revealSecret(id: number): Promise<{ value: string }> {
-	const res = await fetch(`${BASE}/secrets/${id}/reveal`, { method: 'POST' });
+	const res = await fetch(`${BASE}/secrets/${id}/reveal`, { method: 'POST', headers: CSRF_HEADERS });
 	const json = await res.json();
 	if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
 	return json;
 }
 
 export async function deleteSecret(id: number): Promise<{ status: string }> {
-	const res = await fetch(`${BASE}/secrets/${id}`, { method: 'DELETE' });
+	const res = await fetch(`${BASE}/secrets/${id}`, { method: 'DELETE', headers: CSRF_HEADERS });
 	const json = await res.json();
 	if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
 	return json;

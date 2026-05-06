@@ -3,11 +3,23 @@
 	import { selectedRepo } from '$lib/stores';
 	import { fetchIssues, type Issue } from '$lib/api';
 	import { multiSort, toggleSort as toggle, sortArrow, sortIndex, sortArrowClass, type SortColumn } from '$lib/sort';
-	import { applyFilters } from '$lib/filter';
-	import { paginate, totalPages, PAGE_SIZE } from '$lib/paginate';
+	import { applyFilters, distinctValues } from '$lib/filter';
 	import { Card, Table, TableHead, TableHeadCell, TableBody, TableBodyRow, TableBodyCell, Badge, Input, Modal } from 'flowbite-svelte';
 	import { colorConfig, prStatusBorder, priorityColor, categoryColor, type ColorConfig } from '$lib/colors';
 	import IssueDetail from '$lib/components/IssueDetail.svelte';
+	import TablePagination from '$lib/components/TablePagination.svelte';
+	import FilterSelect from '$lib/components/FilterSelect.svelte';
+
+	const PAGE_KEY = 'wshm.pageSize.issues';
+	function readStoredLimit(): number {
+		try {
+			const raw = localStorage.getItem(PAGE_KEY);
+			const n = raw ? Number(raw) : NaN;
+			return Number.isFinite(n) && n > 0 ? n : 50;
+		} catch {
+			return 50;
+		}
+	}
 
 	let colors: ColorConfig = $state(colorConfig.defaults);
 	colorConfig.subscribe(c => colors = c);
@@ -18,6 +30,9 @@
 	let filters: Record<string, string> = $state({
 		number: '', title: '', pr_status: '', labels: '', priority: '', category: '', age: ''
 	});
+	let pageLimit = $state(readStoredLimit());
+	let pageOffset = $state(0);
+	let total = $state(0);
 
 	function timeAgo(dateStr: string): string {
 		const diff = Date.now() - new Date(dateStr).getTime();
@@ -52,31 +67,41 @@
 	}));
 
 	let sorted = $derived(multiSort(filtered, sortColumns));
-	let page = $state(0);
-	let pages = $derived(totalPages(sorted.length));
-	let paged = $derived(paginate(sorted, page));
 
-	// Race guard: when the user switches repo while a fetch is in flight,
-	// the slower response from the old repo could otherwise overwrite the
-	// newer one. Each `load()` claims a monotonic token; results are
-	// dropped if a newer load() has started since.
+	let prStatusOptions = $derived(distinctValues(issues, 'pr_status'));
+	let priorityOptions = $derived(distinctValues(issues, 'priority'));
+	let categoryOptions = $derived(distinctValues(issues, 'category'));
+
+	// Race guard: a fetch in flight from repo A must not overwrite the
+	// list when the user has already switched to repo B. Each load()
+	// claims a monotonic token; results are dropped if a newer load()
+	// has started since.
 	let loadToken = 0;
 	async function load() {
 		const myToken = ++loadToken;
 		try {
 			error = null;
-			const result = await fetchIssues();
+			const data = await fetchIssues({ limit: pageLimit, offset: pageOffset });
 			if (myToken !== loadToken) return;
-			issues = result;
+			issues = data.items;
+			total = data.total;
+			pageLimit = data.limit;
+			pageOffset = data.offset;
 		} catch (e) {
 			if (myToken !== loadToken) return;
 			error = e instanceof Error ? e.message : 'Failed to load issues';
 		}
 	}
 
+	function onPageChange(next: { limit: number; offset: number }) {
+		pageLimit = next.limit;
+		pageOffset = next.offset;
+		load();
+	}
+
 	onMount(() => {
 		load();
-		const unsub = selectedRepo.subscribe(() => { load(); });
+		const unsub = selectedRepo.subscribe(() => { pageOffset = 0; load(); });
 		return unsub;
 	});
 
@@ -130,13 +155,13 @@
 				<TableBodyRow class="border-b border-gray-700">
 					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.number} placeholder="#" size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
 					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.title} placeholder="filter..." size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
-					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.pr_status} placeholder="no/open/ready" size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
+					<TableBodyCell class="px-2 py-1"><FilterSelect bind:value={filters.pr_status} options={prStatusOptions} /></TableBodyCell>
 					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.labels} placeholder="filter..." size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
-					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.priority} placeholder="filter..." size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
-					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.category} placeholder="filter..." size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
+					<TableBodyCell class="px-2 py-1"><FilterSelect bind:value={filters.priority} options={priorityOptions} /></TableBodyCell>
+					<TableBodyCell class="px-2 py-1"><FilterSelect bind:value={filters.category} options={categoryOptions} /></TableBodyCell>
 					<TableBodyCell class="px-2 py-1"><Input type="text" bind:value={filters.age} placeholder=">N" size="sm" class="!py-0.5 !px-1 text-xs" /></TableBodyCell>
 				</TableBodyRow>
-				{#each paged as issue}
+				{#each sorted as issue}
 					<TableBodyRow
 						class="cursor-pointer"
 						style="border-left: 3px solid {prStatusBorder(colors, issue.pr_status ?? 'no_pr')}; background-color: {prStatusBorder(colors, issue.pr_status ?? 'no_pr')}18;"
@@ -187,15 +212,5 @@
 		{/if}
 	</Modal>
 
-	{#if pages > 1}
-		<div class="flex items-center justify-between mt-2 text-sm text-gray-400">
-			<span>{sorted.length} results (page {page + 1}/{pages})</span>
-			<div class="flex gap-1">
-				<button onclick={() => page = 0} disabled={page === 0} class="px-2 py-0.5 rounded border border-gray-600 hover:border-blue-500 disabled:opacity-30 disabled:cursor-default text-xs">|&lt;</button>
-				<button onclick={() => page = Math.max(0, page - 1)} disabled={page === 0} class="px-2 py-0.5 rounded border border-gray-600 hover:border-blue-500 disabled:opacity-30 disabled:cursor-default text-xs">&lt;</button>
-				<button onclick={() => page = Math.min(pages - 1, page + 1)} disabled={page >= pages - 1} class="px-2 py-0.5 rounded border border-gray-600 hover:border-blue-500 disabled:opacity-30 disabled:cursor-default text-xs">&gt;</button>
-				<button onclick={() => page = pages - 1} disabled={page >= pages - 1} class="px-2 py-0.5 rounded border border-gray-600 hover:border-blue-500 disabled:opacity-30 disabled:cursor-default text-xs">&gt;|</button>
-			</div>
-		</div>
-	{/if}
+	<TablePagination {total} limit={pageLimit} offset={pageOffset} storageKey={PAGE_KEY} onChange={onPageChange} />
 {/if}

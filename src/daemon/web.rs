@@ -69,6 +69,43 @@ struct RepoFilter {
     repo: Option<String>,
 }
 
+/// Combined query string for paginated list endpoints
+/// (`/issues`, `/pulls`, `/triage`, `/queue`, `/activity`).
+///
+/// `limit` is clamped to [1, 500] with a default of 50; `offset` defaults to 0.
+#[derive(Debug, Deserialize)]
+struct ListQuery {
+    repo: Option<String>,
+    #[allow(dead_code)] // accepted for forward-compat; current endpoints only return open items
+    state: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+const PAGE_DEFAULT_LIMIT: usize = 50;
+const PAGE_MAX_LIMIT: usize = 500;
+
+/// Slice the aggregated list into a `{items, total, limit, offset}` page.
+/// `items` should already be sorted in the caller's preferred display order.
+fn paginate<T: serde::Serialize>(
+    items: Vec<T>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> serde_json::Value {
+    let total = items.len();
+    let limit = limit
+        .unwrap_or(PAGE_DEFAULT_LIMIT)
+        .clamp(1, PAGE_MAX_LIMIT);
+    let offset = offset.unwrap_or(0).min(total);
+    let slice: Vec<T> = items.into_iter().skip(offset).take(limit).collect();
+    json!({
+        "items": slice,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Auth middleware
 // ---------------------------------------------------------------------------
@@ -145,12 +182,39 @@ fn verify_session_cookie(password: &str, value: &str) -> bool {
     diff == 0
 }
 
-/// HMAC signing key for the user-id session cookie. Deployments using the
-/// RBAC mode are expected to set `WSHM_JWT_SECRET`; the fallback only exists
-/// so the daemon boots in dev — sessions then become trivially forgeable,
-/// which is fine because `[web].password` is the real ACL in that mode.
+/// HMAC signing key for the user-id session cookie.
+///
+/// Resolution order:
+///   1. `WSHM_JWT_SECRET` env var (recommended for production — survives
+///      restarts so sessions stay valid across deploys).
+///   2. A 32-byte random key generated once per process on first use.
+///      Sessions are invalidated on restart but cannot be forged offline.
+///
+/// We deliberately removed the previous string fallback (`wshm-cookie-
+/// fallback`): once published in source it became a public HMAC key,
+/// letting anyone mint a cookie for any user_id on a deploy that forgot
+/// to set `WSHM_JWT_SECRET`.
 fn user_cookie_secret() -> String {
-    std::env::var("WSHM_JWT_SECRET").unwrap_or_else(|_| "wshm-cookie-fallback".to_string())
+    use std::sync::OnceLock;
+    static EPHEMERAL: OnceLock<String> = OnceLock::new();
+    if let Ok(v) = std::env::var("WSHM_JWT_SECRET") {
+        if !v.trim().is_empty() {
+            return v;
+        }
+    }
+    EPHEMERAL
+        .get_or_init(|| {
+            use rand::RngCore;
+            let mut buf = [0u8; 32];
+            rand::thread_rng().fill_bytes(&mut buf);
+            tracing::warn!(
+                "WSHM_JWT_SECRET not set — using ephemeral session key; \
+                 sessions will not survive a daemon restart. \
+                 Set WSHM_JWT_SECRET to a 32-byte hex string for stable sessions."
+            );
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buf)
+        })
+        .clone()
 }
 
 /// Mints a session cookie carrying a user id: `<user_id>.<expires>.<sig>`.
@@ -245,6 +309,48 @@ async fn current_user(
 /// Browser HTML requests get a 302 redirect to `/login`; everything else
 /// (API/JSON) gets a 401 with a JSON error body. Apps in the SPA detect the
 /// 302 and render the login form.
+/// Returns Err(response) if the request is a mutating /api/v1/ call that
+/// lacks a CSRF-defeating custom header. Browsers cannot set custom
+/// headers on cross-origin requests without a CORS preflight, which we
+/// never grant — so requiring the header on POST/PATCH/PUT/DELETE blocks
+/// classic CSRF (form-submit / fetch with credentials:include from a
+/// third-party site, including sibling subdomains under the shared
+/// `.cloud.rtk-ai.app` cookie domain).
+///
+/// Public bootstrap endpoints (login, logout, license activate) are
+/// exempt — they have no authenticated state to abuse.
+fn csrf_check(req: &Request<Body>) -> Result<(), Response> {
+    let method = req.method();
+    if !matches!(method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE") {
+        return Ok(());
+    }
+    let path = req.uri().path();
+    if !path.starts_with("/api/v1/") {
+        return Ok(());
+    }
+    if matches!(
+        path,
+        "/api/v1/auth/login" | "/api/v1/auth/logout" | "/api/v1/license/activate"
+    ) {
+        return Ok(());
+    }
+    let has_token = req
+        .headers()
+        .get("x-wshm-csrf")
+        .or_else(|| req.headers().get("x-requested-with"))
+        .is_some();
+    if has_token {
+        return Ok(());
+    }
+    Err((
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "error": "CSRF protection: include `X-Wshm-Csrf: 1` (or `X-Requested-With`) on POST/PATCH/PUT/DELETE"
+        })),
+    )
+        .into_response())
+}
+
 async fn auth_middleware(
     State(state): State<Arc<WebState>>,
     mut req: Request<Body>,
@@ -253,6 +359,9 @@ async fn auth_middleware(
     let path = req.uri().path().to_string();
     if is_public_path(&path) {
         return next.run(req).await;
+    }
+    if let Err(e) = csrf_check(&req) {
+        return e;
     }
 
     // RBAC mode: a UserStore is configured. Resolve identity through the
@@ -270,22 +379,33 @@ async fn auth_middleware(
     req.extensions_mut()
         .insert(None as Option<crate::auth::User>);
 
+    // Multi-repo: gather every repo's [web] credential. The previous
+    // code picked an arbitrary repo via `repos.values().next()`, which
+    // made auth non-deterministic when two repos had different
+    // `[web].password` values — the gate behaved as one or the other
+    // depending on HashMap iteration order.
+    //
+    // New behavior: a Basic Auth pair / signed cookie is accepted when
+    // it matches ANY configured repo's [web] block. Empty credential
+    // lists (no [web] anywhere) keep "auth disabled" semantics.
     let repos = state.multi.repos.read().await;
-    let web_cfg = match repos.values().next() {
-        Some(ds) => ds.config.web.clone(),
-        None => {
-            drop(repos);
-            return next.run(req).await;
-        }
-    };
+    let web_cfgs: Vec<(String, String)> = repos
+        .values()
+        .filter_map(|ds| {
+            ds.config
+                .web
+                .password
+                .as_ref()
+                .map(|p| (ds.config.web.username.clone(), p.clone()))
+        })
+        .collect();
     drop(repos);
 
-    // No password configured → auth disabled (single-user dev mode).
-    let required_password = match &web_cfg.password {
-        Some(p) => p.clone(),
-        None => return next.run(req).await,
-    };
-    let expected_username = web_cfg.username.clone();
+    // No password configured anywhere → auth disabled (single-user dev mode).
+    if web_cfgs.is_empty() {
+        return next.run(req).await;
+    }
+    let valid_passwords: Vec<String> = web_cfgs.iter().map(|(_, p)| p.clone()).collect();
 
     // 1) Trust oauth2-proxy headers when explicitly enabled. Looking for
     //    X-Forwarded-User / X-Forwarded-Email / X-Auth-Request-Email which
@@ -306,16 +426,24 @@ async fn auth_middleware(
 
     // 2) Signed session cookie set by /api/v1/auth/login. Skipped in RBAC
     //    mode — there the user-id cookie is the canonical session and was
-    //    already tried above via current_user().
+    //    already tried above via current_user(). The cookie is HMAC-signed
+    //    with one of the configured passwords; accept any match across
+    //    repos (rotation of one repo's password doesn't invalidate the
+    //    other's outstanding sessions).
     if state.users.is_none() {
         if let Some(cookie_val) = read_cookie(req.headers(), "wshm_session") {
-            if verify_session_cookie(&required_password, cookie_val) {
+            if valid_passwords
+                .iter()
+                .any(|p| verify_session_cookie(p, cookie_val))
+            {
                 return next.run(req).await;
             }
         }
     }
 
-    // 3) Basic Auth fallback (CLI / curl).
+    // 3) Basic Auth fallback (CLI / curl). Match against ANY configured
+    //    repo's (username, password) pair so a single CI script can hit
+    //    a multi-repo daemon without picking the "right" repo's creds.
     let basic_ok = req
         .headers()
         .get(header::AUTHORIZATION)
@@ -325,7 +453,7 @@ async fn auth_middleware(
         .and_then(|bytes| String::from_utf8(bytes).ok())
         .map(|decoded| {
             if let Some((user, pass)) = decoded.split_once(':') {
-                user == expected_username && pass == required_password
+                web_cfgs.iter().any(|(u, p)| user == u && pass == p)
             } else {
                 false
             }
@@ -893,15 +1021,17 @@ async fn api_status(
 }
 
 /// GET /api/v1/issues -- open issues from DB.
+/// Paginated: returns `{items, total, limit, offset}`. Items are sorted by
+/// `updated_at` desc (newest first), tiebreaker `number` desc.
 async fn api_issues(
     State(state): State<Arc<WebState>>,
-    Query(filter): Query<RepoFilter>,
+    Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
     let mut all_issues = Vec::new();
 
     let __repos_guard = state.multi.repos.read().await;
     for (slug, ds) in __repos_guard.iter() {
-        if let Some(ref f) = filter.repo {
+        if let Some(ref f) = q.repo {
             if f != slug {
                 continue;
             }
@@ -969,19 +1099,31 @@ async fn api_issues(
         }
     }
 
-    Json(all_issues)
+    all_issues.sort_by(|a, b| {
+        let ka = a["updated_at"].as_str().unwrap_or("");
+        let kb = b["updated_at"].as_str().unwrap_or("");
+        kb.cmp(ka).then_with(|| {
+            let na = a["number"].as_u64().unwrap_or(0);
+            let nb = b["number"].as_u64().unwrap_or(0);
+            nb.cmp(&na)
+        })
+    });
+
+    Json(paginate(all_issues, q.limit, q.offset))
 }
 
 /// GET /api/v1/pulls -- open PRs from DB.
+/// Paginated: returns `{items, total, limit, offset}`. Items are sorted by
+/// `updated_at` desc (newest first), tiebreaker `number` desc.
 async fn api_pulls(
     State(state): State<Arc<WebState>>,
-    Query(filter): Query<RepoFilter>,
+    Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
     let mut all_prs = Vec::new();
 
     let __repos_guard = state.multi.repos.read().await;
     for (slug, ds) in __repos_guard.iter() {
-        if let Some(ref f) = filter.repo {
+        if let Some(ref f) = q.repo {
             if f != slug {
                 continue;
             }
@@ -1011,24 +1153,37 @@ async fn api_pulls(
         }
     }
 
-    Json(all_prs)
+    all_prs.sort_by(|a, b| {
+        let ka = a["updated_at"].as_str().unwrap_or("");
+        let kb = b["updated_at"].as_str().unwrap_or("");
+        kb.cmp(ka).then_with(|| {
+            let na = a["number"].as_u64().unwrap_or(0);
+            let nb = b["number"].as_u64().unwrap_or(0);
+            nb.cmp(&na)
+        })
+    });
+
+    Json(paginate(all_prs, q.limit, q.offset))
 }
 
 /// GET /api/v1/triage -- recent triage results.
+/// Paginated: returns `{items, total, limit, offset}` sorted by `acted_at` desc.
 async fn api_triage(
     State(state): State<Arc<WebState>>,
-    Query(filter): Query<RepoFilter>,
+    Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
     let mut all_results = Vec::new();
 
     let __repos_guard = state.multi.repos.read().await;
     for (slug, ds) in __repos_guard.iter() {
-        if let Some(ref f) = filter.repo {
+        if let Some(ref f) = q.repo {
             if f != slug {
                 continue;
             }
         }
-        if let Ok(results) = ds.db.recent_activity(50) {
+        // Pull a generous slice from each repo so cross-repo merge has enough
+        // material; final cut happens after sort + paginate.
+        if let Ok(results) = ds.db.recent_activity(PAGE_MAX_LIMIT) {
             for r in results {
                 all_results.push(json!({
                     "repo": slug,
@@ -1044,19 +1199,26 @@ async fn api_triage(
         }
     }
 
-    Json(all_results)
+    all_results.sort_by(|a, b| {
+        let ka = a["acted_at"].as_str().unwrap_or("");
+        let kb = b["acted_at"].as_str().unwrap_or("");
+        kb.cmp(ka)
+    });
+
+    Json(paginate(all_results, q.limit, q.offset))
 }
 
 /// GET /api/v1/queue -- merge queue: open PRs with basic scoring data.
+/// Paginated: returns `{items, total, limit, offset}` sorted by `score` desc.
 async fn api_queue(
     State(state): State<Arc<WebState>>,
-    Query(filter): Query<RepoFilter>,
+    Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
     let mut queue = Vec::new();
 
     let __repos_guard = state.multi.repos.read().await;
     for (slug, ds) in __repos_guard.iter() {
-        if let Some(ref f) = filter.repo {
+        if let Some(ref f) = q.repo {
             if f != slug {
                 continue;
             }
@@ -1110,33 +1272,39 @@ async fn api_queue(
         }
     }
 
-    // Sort descending by score
+    // Sort descending by score, tiebreaker number desc
     queue.sort_by(|a, b| {
         let sa = a.get("score").and_then(|v| v.as_i64()).unwrap_or(0);
         let sb = b.get("score").and_then(|v| v.as_i64()).unwrap_or(0);
-        sb.cmp(&sa)
+        sb.cmp(&sa).then_with(|| {
+            let na = a["number"].as_u64().unwrap_or(0);
+            let nb = b["number"].as_u64().unwrap_or(0);
+            nb.cmp(&na)
+        })
     });
 
-    Json(queue)
+    Json(paginate(queue, q.limit, q.offset))
 }
 
 /// GET /api/v1/activity -- combined recent triage + PR analysis activity.
+/// Paginated: returns `{items, total, limit, offset}` sorted by `at` desc.
 async fn api_activity(
     State(state): State<Arc<WebState>>,
-    Query(filter): Query<RepoFilter>,
+    Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
     let mut entries: Vec<ActivityEntry> = Vec::new();
 
     let __repos_guard = state.multi.repos.read().await;
     for (slug, ds) in __repos_guard.iter() {
-        if let Some(ref f) = filter.repo {
+        if let Some(ref f) = q.repo {
             if f != slug {
                 continue;
             }
         }
 
-        // Triage activity
-        if let Ok(results) = ds.db.recent_activity(25) {
+        // Pull a generous slice from each repo so cross-repo merge has enough
+        // material; final cut happens after sort + paginate.
+        if let Ok(results) = ds.db.recent_activity(PAGE_MAX_LIMIT) {
             for r in results {
                 entries.push(ActivityEntry {
                     entry_type: "triage".to_string(),
@@ -1170,9 +1338,8 @@ async fn api_activity(
 
     // Sort by timestamp descending
     entries.sort_by(|a, b| b.at.cmp(&a.at));
-    entries.truncate(50);
 
-    Json(entries)
+    Json(paginate(entries, q.limit, q.offset))
 }
 
 // ---------------------------------------------------------------------------
@@ -2074,13 +2241,24 @@ async fn api_auth_status(State(state): State<Arc<WebState>>) -> impl IntoRespons
     }))
 }
 
-/// POST /api/v1/auth/github -- store GITHUB_TOKEN in .wshm/credentials,
-/// update the process env, and hot-reload every running GitHub client so
-/// the change takes effect without a daemon restart.
+/// POST /api/v1/auth/github -- save the GitHub token. Prefers the
+/// encrypted secret store (AES-256-GCM, master key from Vault on Pro
+/// K8s); falls back to the plaintext credentials file when no store is
+/// configured (OSS standalone). Hot-reloads every running GhClient.
 async fn api_auth_github(
     State(state): State<Arc<WebState>>,
+    user: axum::Extension<Option<crate::auth::User>>,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
+    let admin = if state.users.is_some() {
+        match require_admin(&user) {
+            Ok(u) => Some(u),
+            Err(e) => return e,
+        }
+    } else {
+        None
+    };
+
     let token = match body.get("token").and_then(|v| v.as_str()) {
         Some(t) if !t.trim().is_empty() => t.trim().to_string(),
         _ => {
@@ -2092,34 +2270,124 @@ async fn api_auth_github(
         }
     };
 
-    let mut creds = crate::login::load_credentials();
-    creds.insert("GITHUB_TOKEN".to_string(), token.clone());
-    if let Err(e) = crate::login::save_credentials(&creds) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"status": "error", "message": format!("{e}")})),
-        )
-            .into_response();
-    }
+    // Storage strategy: secret store first (encrypted), file fallback.
+    let backend_label = if let Some(store) = state.secrets.as_ref() {
+        if let Err(e) = store
+            .put(
+                crate::secrets::Scope::Global,
+                None,
+                "github_token",
+                &token,
+                admin.as_ref().map(|u| u.id),
+            )
+            .await
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": "error", "message": format!("{e}")})),
+            )
+                .into_response();
+        }
+        // Once persisted in the encrypted store, scrub any legacy
+        // plaintext copy so we don't keep two sources of truth.
+        let mut creds = crate::login::load_credentials();
+        if creds.remove("GITHUB_TOKEN").is_some() {
+            let _ = crate::login::save_credentials(&creds);
+        }
+        "encrypted store"
+    } else {
+        // Fallback: legacy plaintext credentials file.
+        let mut creds = crate::login::load_credentials();
+        creds.insert("GITHUB_TOKEN".to_string(), token.clone());
+        if let Err(e) = crate::login::save_credentials(&creds) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": "error", "message": format!("{e}")})),
+            )
+                .into_response();
+        }
+        "credentials file (plaintext)"
+    };
 
-    // Update the process env so any subsequent Client::new() picks up the
-    // new token via the legacy env-var fallback in config.github_token_optional.
+    // Process env so subsequent Client::new() finds the token via the
+    // env-var fallback if the secret store isn't queried.
     std::env::set_var("GITHUB_TOKEN", &token);
 
-    // Hot-reload every running per-repo daemon's GhClient so existing
-    // pollers / scheduler / processor stop being anonymous immediately.
+    // Hot-reload every running per-repo daemon's GhClient.
     reload_github_clients(&state, crate::secrets::Scope::Global, None).await;
 
     Json(json!({
         "status": "ok",
-        "message": "GitHub token saved and applied (no restart needed)",
+        "message": format!("GitHub token saved to {backend_label} and applied (no restart needed)"),
+        "backend": backend_label,
+    }))
+    .into_response()
+}
+
+/// DELETE /api/v1/auth/github -- remove the configured GitHub token from
+/// every storage backend (encrypted store + credentials file + process
+/// env) and reload the GhClients so they revert to anonymous mode.
+async fn api_auth_github_delete(
+    State(state): State<Arc<WebState>>,
+    user: axum::Extension<Option<crate::auth::User>>,
+) -> Response {
+    if state.users.is_some() {
+        if let Err(e) = require_admin(&user) {
+            return e;
+        }
+    }
+
+    // Remove from encrypted store.
+    let mut removed_any = false;
+    if let Some(store) = state.secrets.as_ref() {
+        if let Ok(list) = store.list().await {
+            for s in list {
+                if s.scope == "global" && s.slug.is_none() && s.key == "github_token" {
+                    let _ = store.delete(s.id, None).await;
+                    removed_any = true;
+                }
+            }
+        }
+    }
+
+    // Remove from plaintext file.
+    let mut creds = crate::login::load_credentials();
+    if creds.remove("GITHUB_TOKEN").is_some() {
+        let _ = crate::login::save_credentials(&creds);
+        removed_any = true;
+    }
+
+    // Clear from process env.
+    std::env::remove_var("GITHUB_TOKEN");
+
+    // Reload GhClients so they go back to anonymous mode.
+    reload_github_clients(&state, crate::secrets::Scope::Global, None).await;
+
+    Json(json!({
+        "status": "ok",
+        "removed": removed_any,
+        "message": "GitHub token cleared (anonymous mode active)",
     }))
     .into_response()
 }
 
 /// POST /api/v1/auth/anthropic -- store Anthropic OAuth token or API key.
 /// Body: {"token": "...", "kind": "oauth"|"api_key"}
-async fn api_auth_anthropic(Json(body): Json<serde_json::Value>) -> impl IntoResponse {
+/// Same encrypted-store-first / file-fallback strategy as api_auth_github.
+async fn api_auth_anthropic(
+    State(state): State<Arc<WebState>>,
+    user: axum::Extension<Option<crate::auth::User>>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let admin = if state.users.is_some() {
+        match require_admin(&user) {
+            Ok(u) => Some(u),
+            Err(e) => return e,
+        }
+    } else {
+        None
+    };
+
     let token = match body.get("token").and_then(|v| v.as_str()) {
         Some(t) if !t.trim().is_empty() => t.trim().to_string(),
         _ => {
@@ -2135,9 +2403,19 @@ async fn api_auth_anthropic(Json(body): Json<serde_json::Value>) -> impl IntoRes
         .and_then(|v| v.as_str())
         .unwrap_or("oauth");
 
-    let key = match kind {
-        "oauth" => "ANTHROPIC_OAUTH_TOKEN",
-        "api_key" => "ANTHROPIC_API_KEY",
+    let (env_key, secret_key, other_env, other_secret) = match kind {
+        "oauth" => (
+            "ANTHROPIC_OAUTH_TOKEN",
+            "anthropic_oauth_token",
+            "ANTHROPIC_API_KEY",
+            "anthropic_api_key",
+        ),
+        "api_key" => (
+            "ANTHROPIC_API_KEY",
+            "anthropic_api_key",
+            "ANTHROPIC_OAUTH_TOKEN",
+            "anthropic_oauth_token",
+        ),
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -2147,30 +2425,112 @@ async fn api_auth_anthropic(Json(body): Json<serde_json::Value>) -> impl IntoRes
         }
     };
 
-    let mut creds = crate::login::load_credentials();
-    // Mutually exclusive: writing one removes the other so we don't
-    // confuse resolve_anthropic_auth's priority.
-    let other = if kind == "oauth" {
-        "ANTHROPIC_API_KEY"
+    let backend_label = if let Some(store) = state.secrets.as_ref() {
+        // Drop the mutually-exclusive other key from the store so
+        // resolve_anthropic_auth's priority isn't confused.
+        if let Ok(list) = store.list().await {
+            for s in list {
+                if s.scope == "global" && s.slug.is_none() && s.key == other_secret {
+                    let _ = store.delete(s.id, None).await;
+                }
+            }
+        }
+        if let Err(e) = store
+            .put(
+                crate::secrets::Scope::Global,
+                None,
+                secret_key,
+                &token,
+                admin.as_ref().map(|u| u.id),
+            )
+            .await
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": "error", "message": format!("{e}")})),
+            )
+                .into_response();
+        }
+        // Scrub any plaintext copy.
+        let mut creds = crate::login::load_credentials();
+        let mut scrubbed = false;
+        scrubbed |= creds.remove(env_key).is_some();
+        scrubbed |= creds.remove(other_env).is_some();
+        if scrubbed {
+            let _ = crate::login::save_credentials(&creds);
+        }
+        "encrypted store"
     } else {
-        "ANTHROPIC_OAUTH_TOKEN"
+        let mut creds = crate::login::load_credentials();
+        creds.remove(other_env);
+        creds.insert(env_key.to_string(), token.clone());
+        if let Err(e) = crate::login::save_credentials(&creds) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": "error", "message": format!("{e}")})),
+            )
+                .into_response();
+        }
+        "credentials file (plaintext)"
     };
-    creds.remove(other);
-    creds.insert(key.to_string(), token);
 
-    match crate::login::save_credentials(&creds) {
-        Ok(()) => Json(json!({
-            "status": "ok",
-            "kind": kind,
-            "message": format!("{key} saved to .wshm/credentials"),
-        }))
-        .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"status": "error", "message": format!("{e}")})),
-        )
-            .into_response(),
+    std::env::set_var(env_key, &token);
+    std::env::remove_var(other_env);
+
+    Json(json!({
+        "status": "ok",
+        "kind": kind,
+        "backend": backend_label,
+        "message": format!("{env_key} saved to {backend_label}"),
+    }))
+    .into_response()
+}
+
+/// DELETE /api/v1/auth/anthropic -- remove both Anthropic credentials
+/// (OAuth token + API key) from every backend.
+async fn api_auth_anthropic_delete(
+    State(state): State<Arc<WebState>>,
+    user: axum::Extension<Option<crate::auth::User>>,
+) -> Response {
+    if state.users.is_some() {
+        if let Err(e) = require_admin(&user) {
+            return e;
+        }
     }
+
+    let mut removed_any = false;
+    if let Some(store) = state.secrets.as_ref() {
+        if let Ok(list) = store.list().await {
+            for s in list {
+                if s.scope == "global"
+                    && s.slug.is_none()
+                    && (s.key == "anthropic_oauth_token" || s.key == "anthropic_api_key")
+                {
+                    let _ = store.delete(s.id, None).await;
+                    removed_any = true;
+                }
+            }
+        }
+    }
+
+    let mut creds = crate::login::load_credentials();
+    let before = creds.len();
+    creds.remove("ANTHROPIC_OAUTH_TOKEN");
+    creds.remove("ANTHROPIC_API_KEY");
+    if creds.len() != before {
+        let _ = crate::login::save_credentials(&creds);
+        removed_any = true;
+    }
+
+    std::env::remove_var("ANTHROPIC_OAUTH_TOKEN");
+    std::env::remove_var("ANTHROPIC_API_KEY");
+
+    Json(json!({
+        "status": "ok",
+        "removed": removed_any,
+        "message": "Anthropic credentials cleared",
+    }))
+    .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -2216,14 +2576,14 @@ async fn api_secrets_put(
     user: axum::Extension<Option<crate::auth::User>>,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
-    tracing::info!(
+    tracing::debug!(
         target: "wshm_core::secrets_trace",
         "api_secrets_put: ENTERED, body keys = {:?}",
         body.as_object().map(|o| o.keys().collect::<Vec<_>>())
     );
     let admin = match require_admin(&user) {
         Ok(u) => {
-            tracing::info!(
+            tracing::debug!(
                 target: "wshm_core::secrets_trace",
                 "api_secrets_put: admin check PASSED, user_id={}",
                 u.id
@@ -2240,7 +2600,7 @@ async fn api_secrets_put(
     };
     let store = match state.secrets.as_ref() {
         Some(s) => {
-            tracing::info!(
+            tracing::debug!(
                 target: "wshm_core::secrets_trace",
                 "api_secrets_put: secret store available"
             );
@@ -2276,7 +2636,7 @@ async fn api_secrets_put(
     let slug = body.get("slug").and_then(|v| v.as_str());
     let key = body.get("key").and_then(|v| v.as_str()).unwrap_or("");
     let value = body.get("value").and_then(|v| v.as_str()).unwrap_or("");
-    tracing::info!(
+    tracing::debug!(
         target: "wshm_core::secrets_trace",
         "api_secrets_put: parsed scope={:?} slug={:?} key={:?} value_len={}",
         scope, slug, key, value.len()
@@ -2310,7 +2670,7 @@ async fn api_secrets_put(
     } else {
         None
     };
-    tracing::info!(
+    tracing::debug!(
         target: "wshm_core::secrets_trace",
         "api_secrets_put: calling store.put(scope={:?}, slug={:?}, key={:?})",
         scope, effective_slug, key.trim()
@@ -2320,7 +2680,7 @@ async fn api_secrets_put(
         .await
     {
         Ok(id) => {
-            tracing::info!(
+            tracing::debug!(
                 target: "wshm_core::secrets_trace",
                 "api_secrets_put: store.put OK — row id={id}"
             );
@@ -2329,13 +2689,13 @@ async fn api_secrets_put(
             // GhClient today; other keys are read on-demand by the relevant
             // pipeline so no reload is needed.
             if key.trim() == "github_token" {
-                tracing::info!(
+                tracing::debug!(
                     target: "wshm_core::secrets_trace",
                     "api_secrets_put: key is github_token — triggering reload"
                 );
                 reload_github_clients(&state, scope, effective_slug).await;
             } else {
-                tracing::info!(
+                tracing::debug!(
                     target: "wshm_core::secrets_trace",
                     "api_secrets_put: key={:?} ≠ github_token — no reload",
                     key.trim()
@@ -2367,7 +2727,7 @@ async fn reload_github_clients(
     slug: Option<&str>,
 ) {
     let repos_guard = state.multi.repos.read().await;
-    tracing::info!(
+    tracing::debug!(
         target: "wshm_core::secrets_trace",
         "reload_github_clients: scope={:?} slug={:?}, iterating {} repos",
         scope, slug, repos_guard.len()
@@ -2379,13 +2739,13 @@ async fn reload_github_clients(
             crate::secrets::Scope::Repo => slug == Some(repo_slug.as_str()),
         };
         if !matches {
-            tracing::info!(
+            tracing::debug!(
                 target: "wshm_core::secrets_trace",
                 "reload_github_clients: SKIPPING [{repo_slug}] (slug mismatch)"
             );
             continue;
         }
-        tracing::info!(
+        tracing::debug!(
             target: "wshm_core::secrets_trace",
             "reload_github_clients: RELOADING [{repo_slug}]"
         );
@@ -2471,10 +2831,19 @@ async fn api_secrets_delete(
 ///
 /// Query: `tail` (default 200, max 5000), `level` (ERROR/WARN/INFO/DEBUG/TRACE),
 /// `since` (numeric id — return only entries newer than this id).
+///
+/// Requires Operator role (or higher) when RBAC is enabled — log entries
+/// can include diagnostic context that members/viewers should not see.
 async fn api_logs(
     State(state): State<Arc<WebState>>,
+    user: axum::Extension<Option<crate::auth::User>>,
     Query(params): Query<LogsQuery>,
 ) -> impl IntoResponse {
+    if state.users.is_some() {
+        if let Err(e) = require_min_role(&user, crate::auth::Role::Operator) {
+            return e;
+        }
+    }
     let logs = match state.logs.as_ref() {
         Some(b) => b,
         None => {
@@ -2537,8 +2906,14 @@ pub fn oss_api_routes() -> Router<Arc<WebState>> {
             get(api_repo_features_get).patch(api_repo_features_patch),
         )
         .route("/api/v1/auth/status", get(api_auth_status))
-        .route("/api/v1/auth/github", post(api_auth_github))
-        .route("/api/v1/auth/anthropic", post(api_auth_anthropic))
+        .route(
+            "/api/v1/auth/github",
+            post(api_auth_github).delete(api_auth_github_delete),
+        )
+        .route(
+            "/api/v1/auth/anthropic",
+            post(api_auth_anthropic).delete(api_auth_anthropic_delete),
+        )
         .route("/api/v1/auth/login", post(api_auth_login))
         .route("/api/v1/auth/logout", post(api_auth_logout))
         .route("/api/v1/auth/me", get(api_auth_me))
