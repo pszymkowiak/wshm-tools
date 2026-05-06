@@ -27,9 +27,53 @@ use self::processor::WebhookEvent;
 
 pub struct DaemonState {
     pub db: Arc<Database>,
-    pub gh: Arc<GhClient>,
+    /// Hot-reloadable GitHub client. The inner Arc is swapped under a
+    /// RwLock when a `github_token` secret is added or removed via the
+    /// web UI, so the new token is picked up without a daemon restart.
+    /// Call sites get a snapshot via [`DaemonState::gh()`].
+    gh: std::sync::RwLock<Arc<GhClient>>,
     pub config: Arc<Config>,
     pub apply: bool,
+}
+
+impl DaemonState {
+    pub fn new(
+        db: Arc<Database>,
+        gh: Arc<GhClient>,
+        config: Arc<Config>,
+        apply: bool,
+    ) -> Self {
+        Self {
+            db,
+            gh: std::sync::RwLock::new(gh),
+            config,
+            apply,
+        }
+    }
+
+    /// Snapshot of the current GitHub client. The returned Arc is
+    /// independent of subsequent reloads, so an in-flight call keeps
+    /// using the old client even if the secret changes mid-request.
+    pub fn gh(&self) -> Arc<GhClient> {
+        self.gh.read().expect("gh RwLock poisoned").clone()
+    }
+
+    /// Rebuild the GitHub client from the current config (re-reads the
+    /// secret store) and atomically swap the inner Arc. Called after a
+    /// `github_token` secret is added or removed via the web UI.
+    pub fn reload_github_client(&self) -> anyhow::Result<()> {
+        let new_client = GhClient::new(&self.config)?;
+        let was_authenticated = self.gh().authenticated;
+        let now_authenticated = new_client.authenticated;
+        *self.gh.write().expect("gh RwLock poisoned") = Arc::new(new_client);
+        info!(
+            "[{}] GitHub client reloaded ({} → {})",
+            self.config.repo_slug(),
+            if was_authenticated { "authenticated" } else { "anonymous" },
+            if now_authenticated { "authenticated" } else { "anonymous" }
+        );
+        Ok(())
+    }
 }
 
 /// Runtime context captured at daemon startup so dynamic add_repo can spawn
@@ -110,12 +154,7 @@ impl MultiDaemonState {
 
         let db = Arc::new(Database::open(&config)?);
         let gh = Arc::new(GhClient::new(&config)?);
-        let state = Arc::new(DaemonState {
-            db,
-            gh,
-            config: Arc::new(config),
-            apply: runtime.global_apply,
-        });
+        let state = Arc::new(DaemonState::new(db, gh, Arc::new(config), runtime.global_apply));
 
         // Persist before mutating runtime state so a crash can't lose the
         // user's intent silently.
@@ -191,12 +230,12 @@ pub async fn run(mut config: Config, args: DaemonArgs) -> Result<()> {
 
     let (tx, rx) = mpsc::channel::<WebhookEvent>(WEBHOOK_CHANNEL_CAPACITY);
 
-    let state = Arc::new(DaemonState {
-        db: Arc::clone(&db),
-        gh: Arc::clone(&gh),
-        config: Arc::clone(&config),
+    let state = Arc::new(DaemonState::new(
+        Arc::clone(&db),
+        Arc::clone(&gh),
+        Arc::clone(&config),
         apply,
-    });
+    ));
 
     let mode = if args.poll { "polling" } else { "webhook" };
     info!(
@@ -399,12 +438,7 @@ pub async fn run_multi_with_extensions(
         let gh = Arc::new(GhClient::new(&config)?);
         let apply = entry.apply.unwrap_or(global_apply);
 
-        let state = Arc::new(DaemonState {
-            db,
-            gh,
-            config: Arc::new(config),
-            apply,
-        });
+        let state = Arc::new(DaemonState::new(db, gh, Arc::new(config), apply));
 
         info!(
             "Loaded repo: {} (path={}, apply={})",

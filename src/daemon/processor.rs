@@ -164,7 +164,7 @@ async fn handle_issue(state: &DaemonState, event: &WebhookEvent) -> anyhow::Resu
     }
 
     // Force sync issues (bypass throttle — we know there's a new event)
-    gh_sync::sync_issues_now(&state.gh, &state.db).await?;
+    gh_sync::sync_issues_now(&state.gh(), &state.db).await?;
 
     // Run triage pipeline
     let args = TriageArgs {
@@ -176,7 +176,7 @@ async fn handle_issue(state: &DaemonState, event: &WebhookEvent) -> anyhow::Resu
     pipelines::triage::run(
         &state.config,
         &state.db,
-        &state.gh,
+        &state.gh(),
         &args,
         pipelines::triage::OutputFormat::Text,
         None,
@@ -235,7 +235,7 @@ async fn handle_pull_request(state: &DaemonState, event: &WebhookEvent) -> anyho
     }
 
     // Force sync pulls (bypass throttle — we know there's a new event)
-    gh_sync::sync_pulls_now(&state.gh, &state.db).await?;
+    gh_sync::sync_pulls_now(&state.gh(), &state.db).await?;
 
     // Run PR analysis pipeline
     let args = PrArgs {
@@ -243,7 +243,7 @@ async fn handle_pull_request(state: &DaemonState, event: &WebhookEvent) -> anyho
         apply: state.apply,
     };
 
-    pipelines::pr_analysis::run(&state.config, &state.db, &state.gh, &args, false, None).await?;
+    pipelines::pr_analysis::run(&state.config, &state.db, &state.gh(), &args, false, None).await?;
 
     // Store in ICM if enabled
     if state.config.daemon.icm_enabled {
@@ -319,7 +319,7 @@ async fn handle_comment(state: &DaemonState, event: &WebhookEvent) -> anyhow::Re
         is_pr,
         &state.config,
         &state.db,
-        &state.gh,
+        &state.gh(),
         state.apply,
         Some(triggered_by),
     )
@@ -327,7 +327,7 @@ async fn handle_comment(state: &DaemonState, event: &WebhookEvent) -> anyhow::Re
 
     // Post response as a comment
     if state.apply {
-        state.gh.comment_issue(number, &response).await?;
+        state.gh().comment_issue(number, &response).await?;
         info!("Posted slash command response on #{number}");
     } else {
         info!("Dry-run slash command response for #{number}: {response}");
