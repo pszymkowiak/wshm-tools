@@ -17,5 +17,45 @@
 	"secrets.help.step3": "Scopes : laisse vide pour la lecture seule des repos publics (5 000 req/h, sans commenter) ; coche « public_repo » si tu veux que wshm pose labels et commentaires.",
 	"secrets.help.step4": "Clique Generate, copie le token (« ghp_… »), colle-le ici en tant que Value avec la clé « github_token ».",
 	"secrets.help.tip": "Déjà connecté via gh CLI ? Lance « gh auth token » et colle le résultat. Attention : c'est ton token perso — les actions wshm apparaîtront sous ton nom.",
-	"secrets.help.link": "Ouvrir github.com/settings/tokens"
+	"secrets.help.link": "Ouvrir github.com/settings/tokens",
+
+	"settings.features.mode.apply": "Mode : Apply (écrit sur GitHub)",
+	"settings.features.mode.dryrun": "Mode : Dry-run (aperçu seul)",
+	"settings.features.mode.body.apply": "wshm va poster les commentaires, poser les labels et ouvrir les PRs selon les actions IA activées ci-dessous.",
+	"settings.features.mode.body.dryrun": "wshm calcule les classifications IA visibles dans les onglets Triage / PRs mais n'écrit pas sur GitHub. Active pour commencer à appliquer les actions.",
+	"settings.features.mode.tip": "Le mode Apply écrit sur GitHub : commentaires, labels, PRs ouvertes, merges. Le Dry-run calcule les mêmes résultats IA mais les stocke uniquement en local pour relecture dans le dashboard. La bascule prend effet au prochain sync — pas besoin de redémarrer le daemon.",
+
+	"settings.features.collection.title": "Collecte en lecture seule",
+	"settings.features.collection.body": "Synchronise les données GitHub vers la base locale. Toujours sûr — aucune écriture vers GitHub.",
+	"settings.features.collection.issues": "Collecter les issues",
+	"settings.features.collection.issues.help": "— synchronise les issues ouvertes + fermées vers la base locale",
+	"settings.features.collection.issues.tip": "Récupère chaque issue ouverte + récemment fermée depuis GitHub vers la base SQLite locale à chaque sync planifié. Requis pour l'onglet Issues et pour le triage. Désactiver arrête le sync mais conserve les issues déjà collectées.",
+	"settings.features.collection.prs": "Collecter les PRs",
+	"settings.features.collection.prs.help": "— synchronise les pull requests + statut CI",
+	"settings.features.collection.prs.tip": "Récupère les PRs ouvertes avec leur statut CI, mergeabilité, labels et auteurs. Requis pour l'onglet PRs, la Queue (classement merge) et l'analyse PR.",
+
+	"settings.features.ai.title": "Classification IA",
+	"settings.features.ai.body": "Quand le Mode : Apply est actif, ces options tournent à chaque sync et postent les résultats sur GitHub. En dry-run elles tournent quand même mais ne mettent à jour que la base locale et les onglets du dashboard.",
+	"settings.features.ai.dimmed": "(calcul seul — aucune écriture GitHub en dry-run)",
+	"settings.features.ai.triage": "Trier les issues",
+	"settings.features.ai.triage.help": "— catégorie + priorité IA ; pose des labels et un commentaire de résumé en mode Apply",
+	"settings.features.ai.triage.tip": "Envoie le titre + corps de chaque nouvelle issue à ton fournisseur IA. Reçoit en retour une catégorie (bug/feature/question/...), une priorité (low/medium/high/critical) et un score de confiance (0-100 %). En mode Apply, pose aussi les labels suggérés et un commentaire de résumé d'une ligne. Ignoré pour les issues correspondant au filtre triage_skip_labels ci-dessous.",
+	"settings.features.ai.analyze": "Analyser les PRs",
+	"settings.features.ai.analyze.help": "— risque + type + checklist IA ; poste un commentaire de résumé en mode Apply",
+	"settings.features.ai.analyze.tip": "Envoie le diff + corps de la PR à ton fournisseur IA et reçoit en retour un niveau de risque (low/medium/high), un type de PR (feature/fix/refactor/...), un résumé et une checklist de revue. En mode Apply, poste un commentaire de résumé sur la PR. Ignoré pour les drafts si skip_drafts est actif.",
+	"settings.features.ai.review": "Reviewer les PRs (Pro)",
+	"settings.features.ai.review.help": "— revue de code inline sur les diffs (feature Pro)",
+	"settings.features.ai.review.tip": "Feature Pro. Envoie le diff de la PR à l'IA pour une revue ligne par ligne. En mode Apply, poste des commentaires de revue inline sur les lignes suspectes (sécurité, perf, bugs, style). Coût en tokens plus élevé qu'Analyze PRs — à réserver aux PRs qui comptent.",
+
+	"settings.features.auto.title": "Auto-actions",
+	"settings.features.auto.body": "Actions mutantes sur le repo. Désactivées par défaut ; nécessitent Mode : Apply pour prendre effet.",
+	"settings.features.auto.dimmed": "(désactivées en dry-run)",
+	"settings.features.auto.fix": "Auto-fix PR",
+	"settings.features.auto.fix.help": "— ouvre des PRs pour les bugs simples détectés au triage",
+	"settings.features.auto.fix.tip": "Pour les issues que le triage marque is_simple_fix=true avec une confiance élevée, demande à l'IA de générer un patch et ouvre une PR liée à l'issue. Restreint au filtre auto_pr_only_labels ci-dessous (par défaut : « good first issue », « help wanted ») pour éviter de toucher quoi que ce soit de risqué.",
+	"settings.features.auto.merge": "Auto-merge",
+	"settings.features.auto.merge.help": "— merge les PRs prêtes une fois les checks verts + score queue au-dessus du seuil",
+	"settings.features.auto.merge.tip": "Pour les PRs qui passent le seuil de scoring de la queue (configuré dans [queue].merge_threshold) et respectent les filtres auto_merge_* (only_labels, only_authors, max_loc), effectue le merge avec ta stratégie configurée (rebase par défaut). Defaults conservateurs : max 200 LoC, dependabot[bot] uniquement, gated par label.",
+
+	"common.moreInfo": "Plus d'infos"
 }
