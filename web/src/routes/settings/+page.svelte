@@ -19,6 +19,7 @@
 		TableBodyRow,
 		TableBodyCell,
 		Modal,
+		Tooltip,
 	} from 'flowbite-svelte';
 	import { colorConfig, type ColorConfig } from '$lib/colors';
 	import { t } from '$lib/i18n';
@@ -446,6 +447,25 @@
 		await refreshUsers();
 	});
 </script>
+
+<!--
+	Reusable info bubble: a small "?" badge next to a label that shows a
+	hover/focus tooltip with deeper context. Use for options whose name
+	doesn't fully convey *what wshm actually does* when toggled on.
+	`bodyKey` is an i18n key resolved via `$t` (en/fr translations live
+	in src/lib/i18n/{en,fr}.json; other locales fall back to English).
+-->
+{#snippet infoTip(id: string, bodyKey: string)}
+	<button
+		type="button"
+		{id}
+		aria-label={$t('common.moreInfo')}
+		class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-gray-700 text-gray-300 text-[10px] font-bold hover:bg-blue-600 hover:text-white transition-colors cursor-help"
+	>?</button>
+	<Tooltip triggeredBy="#{id}" placement="right" class="max-w-xs text-xs leading-snug">
+		{$t(bodyKey)}
+	</Tooltip>
+{/snippet}
 
 <svelte:head>
 	<title>wshm - Settings</title>
@@ -1120,51 +1140,108 @@
 		<p class="text-sm text-gray-500">Loading…</p>
 	{:else}
 		<div class="space-y-4">
-			<div>
-				<h4 class="text-xs uppercase text-gray-500 font-semibold mb-2">Read-only collection</h4>
-				<div class="space-y-1.5">
-					<label class="flex items-center gap-2 text-sm">
-						<input type="checkbox" bind:checked={featuresDraft.collect_issues} class="rounded" />
-						<span><strong>Collect issues</strong> <span class="text-xs text-gray-500">— sync open + closed issues to local DB</span></span>
-					</label>
-					<label class="flex items-center gap-2 text-sm">
-						<input type="checkbox" bind:checked={featuresDraft.collect_prs} class="rounded" />
-						<span><strong>Collect PRs</strong> <span class="text-xs text-gray-500">— sync pull requests + CI status</span></span>
+			<!-- Master mode: dry-run vs apply. Switches all write-back actions. -->
+			<div
+				class="rounded-lg border p-3 transition-colors {featuresDraft.apply
+					? 'border-green-700/60 bg-green-900/20'
+					: 'border-yellow-700/60 bg-yellow-900/20'}"
+			>
+				<div class="flex items-center justify-between gap-3">
+					<div>
+						<h4 class="text-sm font-semibold {featuresDraft.apply ? 'text-green-300' : 'text-yellow-300'} flex items-center gap-1">
+							{featuresDraft.apply
+								? $t('settings.features.mode.apply')
+								: $t('settings.features.mode.dryrun')}
+							{@render infoTip('mode-tip', 'settings.features.mode.tip')}
+						</h4>
+						<p class="text-xs text-gray-400 mt-0.5">
+							{featuresDraft.apply
+								? $t('settings.features.mode.body.apply')
+								: $t('settings.features.mode.body.dryrun')}
+						</p>
+					</div>
+					<label class="inline-flex items-center cursor-pointer shrink-0">
+						<input
+							type="checkbox"
+							bind:checked={featuresDraft.apply}
+							class="sr-only peer"
+						/>
+						<span class="relative w-11 h-6 bg-gray-600 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-500/40 rounded-full peer peer-checked:bg-green-600 transition-colors after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-transform peer-checked:after:translate-x-5"></span>
 					</label>
 				</div>
 			</div>
 
 			<div>
-				<h4 class="text-xs uppercase text-gray-500 font-semibold mb-2">AI classification</h4>
+				<h4 class="text-xs uppercase text-gray-500 font-semibold mb-2">{$t('settings.features.collection.title')}</h4>
+				<p class="text-xs text-gray-500 mb-2">
+					{$t('settings.features.collection.body')}
+				</p>
+				<div class="space-y-1.5">
+					<label class="flex items-center gap-2 text-sm">
+						<input type="checkbox" bind:checked={featuresDraft.collect_issues} class="rounded" />
+						<span><strong>{$t('settings.features.collection.issues')}</strong> <span class="text-xs text-gray-500">{$t('settings.features.collection.issues.help')}</span></span>
+						{@render infoTip('tip-collect-issues', 'settings.features.collection.issues.tip')}
+					</label>
+					<label class="flex items-center gap-2 text-sm">
+						<input type="checkbox" bind:checked={featuresDraft.collect_prs} class="rounded" />
+						<span><strong>{$t('settings.features.collection.prs')}</strong> <span class="text-xs text-gray-500">{$t('settings.features.collection.prs.help')}</span></span>
+						{@render infoTip('tip-collect-prs', 'settings.features.collection.prs.tip')}
+					</label>
+				</div>
+			</div>
+
+			<div class:opacity-60={!featuresDraft.apply}>
+				<h4 class="text-xs uppercase text-gray-500 font-semibold mb-2">
+					{$t('settings.features.ai.title')}
+					{#if !featuresDraft.apply}
+						<span class="ml-2 text-yellow-500/80 normal-case font-normal">{$t('settings.features.ai.dimmed')}</span>
+					{/if}
+				</h4>
+				<p class="text-xs text-gray-500 mb-2">
+					{$t('settings.features.ai.body')}
+				</p>
 				<div class="space-y-1.5">
 					<label class="flex items-center gap-2 text-sm">
 						<input type="checkbox" bind:checked={featuresDraft.triage_issues} class="rounded" />
-						<span><strong>Triage issues</strong> <span class="text-xs text-gray-500">— AI category/priority + label issues</span></span>
+						<span><strong>{$t('settings.features.ai.triage')}</strong> <span class="text-xs text-gray-500">{$t('settings.features.ai.triage.help')}</span></span>
+						{@render infoTip('tip-triage', 'settings.features.ai.triage.tip')}
 					</label>
 					<label class="flex items-center gap-2 text-sm">
 						<input type="checkbox" bind:checked={featuresDraft.analyze_prs} class="rounded" />
-						<span><strong>Analyze PRs</strong> <span class="text-xs text-gray-500">— AI risk/type/summary + comment</span></span>
+						<span><strong>{$t('settings.features.ai.analyze')}</strong> <span class="text-xs text-gray-500">{$t('settings.features.ai.analyze.help')}</span></span>
+						{@render infoTip('tip-analyze', 'settings.features.ai.analyze.tip')}
 					</label>
 					<label class="flex items-center gap-2 text-sm">
 						<input type="checkbox" bind:checked={featuresDraft.review_prs} class="rounded" />
 						<span>
-							<strong>Review PRs (Pro)</strong>
-							<span class="text-xs text-gray-500">— inline code review on PRs</span>
+							<strong>{$t('settings.features.ai.review')}</strong>
+							<span class="text-xs text-gray-500">{$t('settings.features.ai.review.help')}</span>
 						</span>
+						{@render infoTip('tip-review', 'settings.features.ai.review.tip')}
 					</label>
 				</div>
 			</div>
 
-			<div>
-				<h4 class="text-xs uppercase text-gray-500 font-semibold mb-2">Auto-actions</h4>
+			<div class:opacity-60={!featuresDraft.apply}>
+				<h4 class="text-xs uppercase text-gray-500 font-semibold mb-2">
+					{$t('settings.features.auto.title')}
+					{#if !featuresDraft.apply}
+						<span class="ml-2 text-yellow-500/80 normal-case font-normal">{$t('settings.features.auto.dimmed')}</span>
+					{/if}
+				</h4>
+				<p class="text-xs text-gray-500 mb-2">
+					{$t('settings.features.auto.body')}
+				</p>
 				<div class="space-y-1.5">
 					<label class="flex items-center gap-2 text-sm">
 						<input type="checkbox" bind:checked={featuresDraft.auto_pr} class="rounded" />
-						<span><strong>Auto-fix PR</strong> <span class="text-xs text-gray-500">— open PRs for simple bugs</span></span>
+						<span><strong>{$t('settings.features.auto.fix')}</strong> <span class="text-xs text-gray-500">{$t('settings.features.auto.fix.help')}</span></span>
+						{@render infoTip('tip-autopr', 'settings.features.auto.fix.tip')}
 					</label>
 					<label class="flex items-center gap-2 text-sm">
 						<input type="checkbox" bind:checked={featuresDraft.auto_merge} class="rounded" />
-						<span><strong>Auto-merge</strong> <span class="text-xs text-gray-500">— merge ready PRs once checks pass</span></span>
+						<span><strong>{$t('settings.features.auto.merge')}</strong> <span class="text-xs text-gray-500">{$t('settings.features.auto.merge.help')}</span></span>
+						{@render infoTip('tip-automerge', 'settings.features.auto.merge.tip')}
 					</label>
 				</div>
 			</div>

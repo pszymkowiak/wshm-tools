@@ -17,5 +17,45 @@
 	"secrets.help.step3": "Scopes: leave empty for public-repo read-only (5 000 req/h, can't comment); pick \"public_repo\" if you want wshm to label / comment.",
 	"secrets.help.step4": "Click Generate, copy the token (\"ghp_…\"), paste it here as Value with key \"github_token\".",
 	"secrets.help.tip": "Already logged in via gh CLI? Run \"gh auth token\" and paste the output. Note: that token is your personal one — wshm actions will appear as you.",
-	"secrets.help.link": "Open github.com/settings/tokens"
+	"secrets.help.link": "Open github.com/settings/tokens",
+
+	"settings.features.mode.apply": "Mode: Apply (write to GitHub)",
+	"settings.features.mode.dryrun": "Mode: Dry-run (preview only)",
+	"settings.features.mode.body.apply": "wshm will post comments, set labels, and open PRs based on the AI actions enabled below.",
+	"settings.features.mode.body.dryrun": "wshm computes AI classifications visible in the Triage / PRs tabs but does not write to GitHub. Toggle on to start applying actions.",
+	"settings.features.mode.tip": "Apply mode posts to GitHub: comments, labels, opened PRs, merges. Dry-run computes the same AI results but only stores them locally for review in the dashboard. Toggle takes effect on the next sync — no daemon restart.",
+
+	"settings.features.collection.title": "Read-only collection",
+	"settings.features.collection.body": "Sync GitHub data into the local DB. Always safe — no writes back.",
+	"settings.features.collection.issues": "Collect issues",
+	"settings.features.collection.issues.help": "— sync open + closed issues to local DB",
+	"settings.features.collection.issues.tip": "Pulls every open + recently-closed issue from GitHub into the local SQLite DB on each scheduled sync. Required for the Issues tab and for triage. Disabling stops the sync but keeps already-collected issues in the DB.",
+	"settings.features.collection.prs": "Collect PRs",
+	"settings.features.collection.prs.help": "— sync pull requests + CI status",
+	"settings.features.collection.prs.tip": "Pulls open PRs along with their CI status, mergeability, labels, and authors. Required for the PRs tab, the Queue (merge ranking), and PR analysis.",
+
+	"settings.features.ai.title": "AI classification",
+	"settings.features.ai.body": "When Mode: Apply is on, these run on every sync and post results to GitHub. In dry-run they still run but only update the local DB and the dashboard tabs.",
+	"settings.features.ai.dimmed": "(computed only — no GitHub writes while in dry-run)",
+	"settings.features.ai.triage": "Triage issues",
+	"settings.features.ai.triage.help": "— AI category + priority; posts labels and a summary comment when Apply is on",
+	"settings.features.ai.triage.tip": "Sends each new issue title + body to your AI provider. Returns a category (bug/feature/question/...), priority (low/medium/high/critical), and confidence score (0-100%). When Apply is on, also posts the suggested labels and a one-line summary comment. Skipped for issues matching the triage_skip_labels filter below.",
+	"settings.features.ai.analyze": "Analyze PRs",
+	"settings.features.ai.analyze.help": "— AI risk + type + checklist; posts a summary comment when Apply is on",
+	"settings.features.ai.analyze.tip": "Sends the PR diff + body to your AI provider and gets back a risk level (low/medium/high), PR type (feature/fix/refactor/...), summary, and a review checklist. When Apply is on, posts a summary comment on the PR. Skipped for drafts when skip_drafts is enabled.",
+	"settings.features.ai.review": "Review PRs (Pro)",
+	"settings.features.ai.review.help": "— inline code review on PR diffs (Pro feature)",
+	"settings.features.ai.review.tip": "Pro feature. Sends the PR diff to the AI for line-by-line review. When Apply is on, posts inline review comments on suspicious lines (security, perf, bugs, style). Higher token cost than Analyze PRs — use it on PRs that matter.",
+
+	"settings.features.auto.title": "Auto-actions",
+	"settings.features.auto.body": "Mutating actions on the repo. Off by default; require Mode: Apply to take effect.",
+	"settings.features.auto.dimmed": "(disabled in dry-run)",
+	"settings.features.auto.fix": "Auto-fix PR",
+	"settings.features.auto.fix.help": "— open PRs for simple bugs flagged by triage",
+	"settings.features.auto.fix.tip": "For issues triage flags as is_simple_fix=true with high confidence, ask the AI to generate a patch and open a PR linked to the issue. Restricted to the auto_pr_only_labels filter below (default: \"good first issue\", \"help wanted\") to avoid touching anything risky.",
+	"settings.features.auto.merge": "Auto-merge",
+	"settings.features.auto.merge.help": "— merge ready PRs once checks pass + queue score above threshold",
+	"settings.features.auto.merge.tip": "For PRs that pass the queue scoring threshold (configured in [queue].merge_threshold) and meet the auto_merge_* filters (only_labels, only_authors, max_loc), perform the merge using your configured strategy (rebase by default). Conservative defaults: max 200 LoC, dependabot[bot] only, label-gated.",
+
+	"common.moreInfo": "More info"
 }
