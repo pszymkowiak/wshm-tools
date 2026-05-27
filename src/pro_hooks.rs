@@ -13,7 +13,8 @@ use std::pin::Pin;
 use std::sync::OnceLock;
 
 use crate::config::Config;
-use crate::db::Database;
+use crate::db::backend::DatabaseBackend;
+use crate::Database;
 use crate::github::Client as GhClient;
 
 // --- Feature gate hook ---
@@ -126,7 +127,7 @@ pub fn set_review_hook(f: ReviewHook) {
 /// Returns `Ok(false)` if no Pro hook is registered (OSS build).
 pub async fn run_auto_fix(
     config: &Config,
-    db: &Database,
+    db: &dyn DatabaseBackend,
     gh: &GhClient,
     issue_number: u64,
 ) -> anyhow::Result<bool> {
@@ -143,7 +144,7 @@ pub async fn run_auto_fix(
 /// Returns `Ok(false)` if no Pro hook is registered (OSS build).
 pub async fn run_review(
     config: &Config,
-    db: &Database,
+    db: &dyn DatabaseBackend,
     gh: &GhClient,
     pr_number: u64,
     apply: bool,
