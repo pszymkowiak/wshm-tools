@@ -196,6 +196,7 @@ pub fn get_untriaged_issues(conn: &Connection) -> Result<Vec<Issue>> {
 ///   * it carries one of `relabel_labels` (case-insensitive),
 ///   * it has zero labels AND its last triage is older than
 ///     `no_labels_min_age_hours` (0 disables this trigger).
+///
 /// Returns up to `limit` issues prioritized by reaction count, then issue number.
 pub fn get_issues_needing_triage(
     conn: &Connection,
