@@ -144,9 +144,8 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
             let rows: Vec<(i64, String, Option<String>)> = select
                 .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
-            let mut update = tx.prepare(
-                "UPDATE triage_results SET content_hash = ?1 WHERE issue_number = ?2",
-            )?;
+            let mut update =
+                tx.prepare("UPDATE triage_results SET content_hash = ?1 WHERE issue_number = ?2")?;
             for (issue_number, title, body) in rows {
                 let new_hash = compute_issue_hash(&title, body.as_deref());
                 update.execute(rusqlite::params![new_hash, issue_number])?;

@@ -187,9 +187,7 @@ pub async fn run_with_filters(
                         let to_strip: Vec<String> = issue
                             .labels
                             .iter()
-                            .filter(|l| {
-                                relabel.iter().any(|r| r.eq_ignore_ascii_case(l))
-                            })
+                            .filter(|l| relabel.iter().any(|r| r.eq_ignore_ascii_case(l)))
                             .cloned()
                             .collect();
                         for label in &to_strip {
@@ -206,9 +204,7 @@ pub async fn run_with_filters(
                             }
                         }
                         if !to_strip.is_empty() {
-                            if let Err(e) =
-                                db.merge_issue_labels(issue.number, &[], &to_strip)
-                            {
+                            if let Err(e) = db.merge_issue_labels(issue.number, &[], &to_strip) {
                                 tracing::warn!(
                                     "Failed to update local labels for #{} after relabel cleanup: {e}",
                                     issue.number
@@ -277,7 +273,9 @@ fn relabel_labels_from(filters: Option<&crate::config::RepoFilters>) -> Vec<Stri
 }
 
 fn no_labels_min_age_from(filters: Option<&crate::config::RepoFilters>) -> u32 {
-    filters.map(|f| f.triage_no_labels_min_age_hours).unwrap_or(0)
+    filters
+        .map(|f| f.triage_no_labels_min_age_hours)
+        .unwrap_or(0)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -293,8 +291,7 @@ async fn triage_issue(
     exporter: Option<&ExportManager>,
 ) -> Result<IssueClassification> {
     // Content hash cache: skip LLM call if content hasn't changed since last triage
-    let content_hash =
-        crate::db::schema::compute_issue_hash(&issue.title, issue.body.as_deref());
+    let content_hash = crate::db::schema::compute_issue_hash(&issue.title, issue.body.as_deref());
 
     if let Ok(Some(existing)) = db.get_triage_result(issue.number) {
         if existing.content_hash.as_deref() == Some(content_hash.as_str()) {
